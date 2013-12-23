@@ -1,0 +1,8 @@
+#/bin/sh
+~/mplayer.sh -dn http://donghua.cntv.cn/huluxiongdi/classpage/video/20110909/100231.shtml
+~/mplayer.sh -dn http://donghua.cntv.cn/huluxiongdi/classpage/video/20110909/100226.shtml
+~/mplayer.sh -dn http://donghua.cntv.cn/huluxiongdi/classpage/video/20110909/100233.shtml
+~/mplayer.sh -dn http://donghua.cntv.cn/huluxiongdi/classpage/video/20110909/100236.shtml
+~/mplayer.sh -dn http://donghua.cntv.cn/huluxiongdi/classpage/video/20110909/100228.shtml
+~/mplayer.sh -dn http://donghua.cntv.cn/huluxiongdi/classpage/video/20110909/100248.shtml
+~/mplayer.sh -dn http://donghua.cntv.cn/huluxiongdi/classpage/video/20110909/100222.shtml

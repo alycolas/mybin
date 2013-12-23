@@ -1,0 +1,37 @@
+#!/bin/sh
+
+let current=`curl http://jandan.net/ooxx 2>/dev/null| grep -o -m 1 "\[[[:digit:]]\{3\}\]" |  grep -o "[[:digit:]]\{3\}"`
+
+for i in {1..100}
+do
+	echo $current
+	mkdir /tmp/$current
+	#curl http://jandan.net/ooxx/page-$current 2>/dev/null | grep \<p\>\<img | cut -d "\"" -f2 |  aria2c -j50 -q -c -d /tmp/$current -i - & 
+	curl http://jandan.net/ooxx/page-$current 2>/dev/null | \
+		grep \<p\>\<img | \
+		cut -d "\"" -f2 | \
+		#sed -e "s/^/\"/g" -e "s/$/\"/g" | \
+		nl -nrz -w2 | \
+		sed -e "s/^/aria2c -d \/tmp\/$current -o /g" -e "s/$/ \&/g" | \
+		#sed -e "s/^/wget -O \/tmp\/$current\//g" |\
+		#sed -e "2,$ s/$/ \&/g" | \
+		sh 1>/dev/null 2>/dev/null 
+
+	##wait for at least 5 seconds
+	for j in {1..5}
+	do
+	if [ ! -f "/tmp/$current/01" ]; then
+		sleep 1
+		echo $j seconds
+	fi
+	done
+	##end
+
+	feh  -R1 -FYdZD4 --cycle-once /tmp/$current/ 
+	#killall wget 2>/dev/null
+	killall aria2c 2>/dev/null
+	rm -r /tmp/$current
+	echo "Press Enter to view next page !"
+	read -n 1 
+	current=$(($current-1))
+done
