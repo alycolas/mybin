@@ -55,12 +55,12 @@ then
 		then
 			if file ${EP}_[0-9][0-9] | grep -q MPEG
 			then
-				if python2.7 ~/lixian/mp4_join.py --output ${EP}.mp4 ./${EP}_[0-9][0-9]
+				if python2.7 mp4_join.py --output ${EP}.mp4 ./${EP}_[0-9][0-9]
 				then
 					rm ${EP}_[0-9][0-9]
 				fi
 			else
-				if python2.7 ~/lixian/flv_join.py --output ${EP}.flv ./${EP}_[0-9][0-9]
+				if python2.7 flv_join.py --output ${EP}.flv ./${EP}_[0-9][0-9]
 				then
 					rm ${EP}_[0-9][0-9]
 				fi
