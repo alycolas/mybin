@@ -7,6 +7,9 @@ PLAYER='mplayer'
 WGET='wget -T3'
 title=`date +%j%H%M`
 
+# use super2 when play letv videos
+echo "$@" | grep letv && QULITY="super2"
+
 while getopts :hndwFf:p opt
 do 
 	case $opt in
@@ -39,7 +42,7 @@ then
 	then
 		shift $(($OPTIND - 1))
 		echo  sdjfsfd $1
-		$WGET "http://www.flvcd.com/parse.php?kw=$1&format=${QULITY:-super2}" -O - | #2>/tmp/log$$ |
+		$WGET "http://www.flvcd.com/parse.php?kw=$1&format=${QULITY:-super}" -O - | #2>/tmp/log$$ |
 			grep "onclick" |
 			cut -d "\"" -f2 |
 			sed 's/^/\"/;s/$/\"/g' |
@@ -83,7 +86,7 @@ then
 	
 else
 	shift $(($OPTIND - 1))
-	$WGET "http://www.flvcd.com/parse.php?kw=$1&format=${QULITY:-super2}" -O -| # 2>/tmp/log$$ |
+	$WGET "http://www.flvcd.com/parse.php?kw=$1&format=${QULITY:-super}" -O -| # 2>/tmp/log$$ |
 	grep "onclick" |
 	cut -d "\"" -f2 | while read url
 	do
