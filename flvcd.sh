@@ -58,12 +58,12 @@ then
 		then
 			if file ${EP}_[0-9][0-9] | grep -q MPEG
 			then
-				if python2.7 mp4_join.py --output ${EP}.mp4 ./${EP}_[0-9][0-9]
+				if python2.7 ~/bin/mp4_join.py --output ${EP}.mp4 ./${EP}_[0-9][0-9]
 				then
 					rm ${EP}_[0-9][0-9]
 				fi
 			else
-				if python2.7 flv_join.py --output ${EP}.flv ./${EP}_[0-9][0-9]
+				if python2.7 ~/bin/flv_join.py --output ${EP}.flv ./${EP}_[0-9][0-9]
 				then
 					rm ${EP}_[0-9][0-9]
 				fi
@@ -90,7 +90,7 @@ else
 	grep "onclick" |
 	cut -d "\"" -f2 | while read url
 	do
-	wget -T2 --user-agent="Mozilla/5.0 (Windows; U; Windows NT 5.1; en-US; rv:1.8.0.6) Gecko/20060728 Firefox/1.5" -O- $url 2>/dev/pts/0 |
+	wget -T5 --user-agent="Mozilla/5.0 (Windows; U; Windows NT 5.1; en-US; rv:1.8.0.6) Gecko/20060728 Firefox/1.5" -O- $url 2>/dev/pts/0 |
 	$PLAYER - | 
 	grep Quit && exit 2
 done
