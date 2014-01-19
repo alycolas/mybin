@@ -58,16 +58,18 @@ then
 		then
 			if file ${EP}_[0-9][0-9] | grep -q MPEG
 			then
-				if python2.7 ~/bin/mp4_join.py --output ${EP}.mp4 ./${EP}_[0-9][0-9]
+				echo 合并中...
+				if com.sh ./${EP}_[0-9][0-9]
 				then
 					rm ${EP}_[0-9][0-9]
 				fi
 			else
-				if python2.7 ~/bin/flv_join.py --output ${EP}.flv ./${EP}_[0-9][0-9]
+				echo 合并中...
+				if com.sh  ./${EP}_[0-9][0-9]
 				then
 					rm ${EP}_[0-9][0-9]
 				fi
-			fi
+			fi 2>/dev/null
 		else
 			if file ${EP}_[0-9][0-9] | grep -q MPEG
 			then
