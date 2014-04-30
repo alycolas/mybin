@@ -92,7 +92,7 @@ else
 	grep "onclick" |
 	cut -d "\"" -f2 | while read url
 	do
-	wget -T5 --user-agent="Mozilla/5.0 (Windows; U; Windows NT 5.1; en-US; rv:1.8.0.6) Gecko/20060728 Firefox/1.5" -O- $url 2>/dev/pts/0 |
+		wget -T4 --referer="$1" --user-agent="Mozilla/5.0 (X11; Linux i686) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/30.0.1599.114 Safari/537.36" -O- $url 2>/dev/pts/0 |
 	$PLAYER - | 
 	grep Quit && exit 2
 done
