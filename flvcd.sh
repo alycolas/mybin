@@ -4,7 +4,7 @@
 #	flvcd.sh [OPTION] [URL]
 
 PLAYER='mplayer'
-WGET='wget -T3'
+WGET='wget -T5'
 title=`date +%j%H%M`
 
 # use super2 when play letv videos
@@ -44,6 +44,8 @@ then
 		echo  sdjfsfd $1
 		$WGET "http://www.flvcd.com/parse.php?kw=$1&format=${QULITY:-super}" -O - | #2>/tmp/log$$ |
 			grep "onclick" |
+			sed -e 's/<BR>/\n/g' |
+			sed 1d |
 			cut -d "\"" -f2 |
 			sed 's/^/\"/;s/$/\"/g' |
 			nl -nrz -w2 | 
@@ -88,11 +90,13 @@ then
 	
 else
 	shift $(($OPTIND - 1))
-	$WGET "http://www.flvcd.com/parse.php?kw=$1&format=${QULITY:-super}" -O -| # 2>/tmp/log$$ |
+	curl "http://www.flvcd.com/parse.php?kw=$1&format=${QULITY:-super}" | # 2>/tmp/log$$ |
 	grep "onclick" |
+	sed -e 's/<BR>/\n/g' |
+	sed 1d |
 	cut -d "\"" -f2 | while read url
 	do
-		wget -T4 --referer="$1" --user-agent="Mozilla/5.0 (X11; Linux i686) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/30.0.1599.114 Safari/537.36" -O- $url 2>/dev/pts/0 |
+		wget -T4  --user-agent="Mozilla/5.0 (X11; Linux i686) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/30.0.1599.114 Safari/537.36" -O- $url 2>/dev/pts/0 |
 	$PLAYER - | 
 	grep Quit && exit 2
 done
