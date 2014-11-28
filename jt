@@ -1,10 +1,10 @@
 #!/bin/sh
 
-# Take a screenshot and move it to ~/mnt/MI-ONE/note
+# Take a screenshot and move it to ~/note
 
 if [ -n "$1" ]
 then
-	scrot -bs $1.png -e 'mv $f ~/mnt/MI-ONE/note'
+	scrot -bs $1.png -e 'mv $f ~/note'
 else
-	scrot -bs -e 'mv $f ~/mnt/MI-ONE/note'
+	scrot -bs -e 'mv $f ~/note'
 fi

@@ -91,13 +91,12 @@ then
 else
 	shift $(($OPTIND - 1))
 	curl "http://www.flvcd.com/parse.php?kw=$1&format=${QULITY:-super}" | # 2>/tmp/log$$ |
-	grep "onclick" |
 	sed -e 's/<BR>/\n/g' |
-	sed 1d |
+	grep "onclick" |
 	cut -d "\"" -f2 | while read url
 	do
 		wget -T4  --user-agent="Mozilla/5.0 (X11; Linux i686) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/30.0.1599.114 Safari/537.36" -O- $url 2>/dev/pts/0 |
-	$PLAYER - | 
-	grep Quit && exit 2
+		$PLAYER - | 
+		grep Quit && exit 2
 done
 fi
