@@ -4,7 +4,7 @@
 [[ "$2" = "-p" ]] && export http_proxy="http://127.0.0.1:8087"
 
 you-get -u $1 | 
-grep "http" | 
+sed -n "/http/p" | 
 sed -e "s/[][' )(]//g" -e "s/,/\n/g" | 
 while read url
 do 

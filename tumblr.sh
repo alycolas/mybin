@@ -1,6 +1,6 @@
 #!/bin/sh
 
-export http_proxy="127.0.0.1:8087"
+#export http_proxy="127.0.0.1:8087"
 
 trap "exit 1" HUP INT PIPE QUIT TERM
 trap "rm /tmp/tmp$$" EXIT
@@ -16,7 +16,7 @@ for i in `seq $2 $3`
 do
 	echo $i
 	wget --user-agent=Opera/9.80\ \(X11\;\ Linux\ i686\)\ Presto/2.12.388\ Version/12.15 "http://$1.tumblr.com/page/$i" -O - |
-	sed -n -E "s|.*(http://$1.tumblr.com/post/[[:digit:]]{11}).*|\1|p" | uniq |
+	sed -n -E "s|.*\"(http://$1.tumblr.com/post/[0-9]*)[^\"]*\".*|\1|p" | uniq |
 	while read k
 	do
 		echo $k

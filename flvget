@@ -1,0 +1,180 @@
+#!/bin/bash
+
+# 文件名：flvget
+# 本脚本利用 http://www.flvurl.cn 或 http://www.flvcd.com 提供的服务解析在线视频并下载
+# 受支持的站点列表见 http://www.flvurl.cn 及 http://www.flvcd.com
+# 南浦月 http://blog.nanpuyue.com
+# 2013-6-6
+
+# 用法：
+# flvget <在线视频地址> [清晰度]
+# 示例：
+#	flvget http://www.iqiyi.com/dongman/20121105/077f6156dad52548.html super
+# 清晰度参数是可选的，可用的选项有：normal、high、super、super2
+# 如果解析时由于无法连接服务器造成不能解析，可能需要使用代理：
+#	[PROXY=<协议>://<主机>:<端口>] flvurl.sh <在线视频地址> [清晰度]
+# 例如：
+# 	PROXY=http://127.0.0.1:8087 flvget http://www.iqiyi.com/dongman/20121105/077f6156dad52548.html super
+
+UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/27.0.1453.93 Safari/537.36"
+
+function contain()
+{
+RESULT=`echo "$2"|grep -P "$1"`
+if [ -n "$RESULT" ];then
+	return 0
+else
+	return 1
+fi
+}
+
+function flvurl()
+{
+URL=`urlencode "$1"`
+REST="0"
+HIDDEN="__VIEWSTATE=/wEPDwUKMTEyMjQxNzgwNWRkkmmTkw49v8CbbVJbcPAIaTh0POY="
+SUBMIT="fetchButton=获取视频地址解析"
+FETCHURL="http://www.flvurl.cn/Default.aspx"
+
+META=\
+`curl -sx "$PROXY" -A "$UA" -d "$HIDDEN&urlTextBox=$URL&$SUBMIT" "$FETCHURL"|\
+grep "<strong>视频名称:</strong>"|\
+sed -r "s#</?strong>|</font>|<font color=red>##g"|\
+grep -Po "视频名称: \[.*?\](?=（)|(?<=类型:).*?(?=\s*?网址如下)|(?<=\(本视频由)\d*?段(?=小视频组合而成)|\d*?台(?=服务器提供下载)|(?<=<a href =\')http.*?(?=\'|>)|(?<=<a href =\")http.*?(?=\"|>)"`
+
+TITLE=`echo "$META" | grep -Po "(?<=视频名称: \[).*?(?=\])"`
+META=`echo "$META"|grep -v "视频名称"`
+
+if [ -z "$2" ];then
+	QUALITY="普通|流畅"
+else
+	case "$2" in
+		"all" )
+		echo "$META" > "$TITLE.txt"
+		return
+		;;
+		"normal" )
+		QUALITY="普通|流畅"
+		;;
+		"high" )
+		QUALITY="高清"
+		;;
+		"super" )
+		QUALITY="超清"
+		;;
+		"super2" )
+		QUALITY="超清"
+		;;
+	esac
+fi
+
+
+function getlist()
+{
+if  contain "[0-9]*台" "$META";then
+	ADD=$'\t'
+else
+	ADD=$'\n'
+fi
+echo "$META"|\
+while read LINE
+do
+if [ -z "$PRELINE" ];then
+	PRELINE="$LINE"
+fi
+
+if contain "[0-9]*段" "$LINE";then
+	continue
+elif contain "[0-9]*台" "$LINE";then
+	continue
+elif contain "http" "$LINE" && contain "$QUALITY" "$PRELINE";then
+	if [ -z "$LIST" ];then
+		LIST="$LINE"
+	else
+		LIST="$LIST$ADD$LINE"
+	fi
+elif [ -n "$LIST" ];then
+	echo "$LIST"
+	break
+else
+	PRELINE="$LINE"
+fi
+done
+}
+
+LIST=`getlist|grep -v "^\s*$"`
+}
+
+function flvcd()
+{
+URL=`urlencode "$1"`
+FETCHURL="http://www.flvcd.com/parse.php"
+
+if [ -n "$2" ];then
+	QUALITY="$2"
+else
+	QUALITY="normal"
+fi
+
+META=\
+`curl -sx "$PROXY" -A "$UA" "$FETCHURL?kw=$URL&format=$QUALITY"|\
+iconv -f gb2312 -t utf-8|\
+grep -P "<input type=\"hidden\" name=\"filename\"|<input type=\"hidden\" name=\"inf\""`
+
+TITLE=`echo "$META"|grep -Po "(?<=name=\"filename\" value=\").*?(?=\"/>)"`
+
+LIST=\
+`echo "$META"|\
+sed -r "s#<input type=\"hidden\" name=\"inf\" value=\"|<input type=\"hidden\" name=\"filename\" value=.*/>|\"/>##g"|\
+sed -r "s#\|#\n#g"|\
+grep -v "^\s*$"`
+}
+
+function aria2list()
+{
+INDEX="0"
+echo "$LIST"|\
+while read LINE
+do
+	EXTENSION=`echo "$LINE"|sed -r "s#.*/|\?.*##g"|sed -r "s#.*\.##g"`
+	if ! contain "flv|mp4|f4v" "$EXTENSION";then
+		if contain "flv" "$LINE";then
+			EXTENSION="flv"
+		elif contain "f4v" "$LINE";then
+			EXTENSION="f4v"
+		elif contain "mp4" "$LINE";then
+			EXTENSION="mp4"
+		else
+			EXTENSION="flv"
+		fi
+	fi
+	INDEX=$[$INDEX+1]
+	echo -e "$LINE\n dir=$TITLE\n out=$INDEX.$EXTENSION\n continue=true"
+done
+}
+
+function download()
+{
+DLINDEX=`aria2list`
+if [ -z "$PROXY" ];then
+	echo "$DLINDEX"|\
+	aria2c -U "$UA" -j 20 -i -
+else
+	echo "$DLINDEX"|\
+	aria2c --http-proxy="$PROXY" -j 2 -U "$UA" -i -
+fi
+}
+
+function main()
+{
+if contain "http.*?.iqiyi.com/|http.*?.sohu.com/" "$1";then
+	echo flvurl
+	flvurl "$1" "$2"
+else
+	echo flvcd
+	flvcd "$1" "$2"
+fi
+}
+
+main "$1" "$2"
+download
