@@ -43,10 +43,9 @@ then
 		shift $(($OPTIND - 1))
 		echo  sdjfsfd $1
 		$WGET "http://www.flvcd.com/parse.php?kw=$1&format=${QULITY:-super}" -O - | #2>/tmp/log$$ |
-			grep "onclick" |
-			sed -e 's/<BR>/\n/g' |
-			sed 1d |
-			cut -d "\"" -f2 |
+		sed -e 's/<BR>/\n/g' |
+		sed -n -e '/onclick/p' |
+		cut -d "\"" -f2 |
 			sed 's/^/\"/;s/$/\"/g' |
 			nl -nrz -w2 | 
 		  while read url
