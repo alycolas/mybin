@@ -1,5 +1,12 @@
 #!/bin/sh
+#use you-get to play online vedio
 
-ssh -p 27774 root@104.224.168.29 youtube-dl "$1" $2>/tmp/filename
+[[ "$2" = "-p" ]] && export http_proxy="http://127.0.0.1:8087"
 
-#scp -P 27774 root@104.224.168.29:/root/"$(grep Destination /tmp/filename | cut -d":" -f2 | sed -e "s/^ //" -e 's/ /\\ /g')" ./
+youtube-dl -g $1 | 
+while read url
+do 
+	wget --referer="$1" --user-agent="Mozilla/5.0 (Windows; U; Windows NT 5.1; en-US; rv:1.8.0.6) Gecko/20060728 Firefox/1.5" $url -O - 2>/dev/pts/0 | 
+	mplayer - | 
+	grep Quit && exit 2
+done
