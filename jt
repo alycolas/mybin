@@ -4,7 +4,7 @@
 
 if [ -n "$1" ]
 then
-	scrot -bs $1.png -e 'mv $f ~/note'
+	scrot -bs $1.png -e 'mv $f ~/Sync'
 else
-	scrot -bs -e 'mv $f ~/note'
+	scrot -bs -e 'mv $f ~/Sync'
 fi

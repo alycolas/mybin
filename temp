@@ -1,8 +1,8 @@
-#/bin/sh
-~/mplayer.sh -dn http://donghua.cntv.cn/huluxiongdi/classpage/video/20110909/100231.shtml
-~/mplayer.sh -dn http://donghua.cntv.cn/huluxiongdi/classpage/video/20110909/100226.shtml
-~/mplayer.sh -dn http://donghua.cntv.cn/huluxiongdi/classpage/video/20110909/100233.shtml
-~/mplayer.sh -dn http://donghua.cntv.cn/huluxiongdi/classpage/video/20110909/100236.shtml
-~/mplayer.sh -dn http://donghua.cntv.cn/huluxiongdi/classpage/video/20110909/100228.shtml
-~/mplayer.sh -dn http://donghua.cntv.cn/huluxiongdi/classpage/video/20110909/100248.shtml
-~/mplayer.sh -dn http://donghua.cntv.cn/huluxiongdi/classpage/video/20110909/100222.shtml
+#!/bin/sh
+
+DATE=$(date +"%Y-%m-%d %H:%M")
+TEMP=$(sensors | grep "Core 0" | cut -d'(' -f1 | cut -d'+' -f2)
+
+sed -i "1i$DATE    $TEMP" /home/httpd/html/dav/temp.txt
+#sed -i "1i$DATE" /home/httpd/html/dav/notepad
+ssh root@192.168.0.254 "cat /proc/net/arp|grep x2" > /home/httpd/html/dav/arp

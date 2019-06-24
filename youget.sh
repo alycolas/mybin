@@ -6,8 +6,10 @@
 you-get -u $1 | 
 sed -n "/http/p" | 
 #sed -e "s/[][' )(]//g" -e "s/,/\n/g" | 
-while read url
-do 
-	xargs mplayer -fs "$url" | 
-	grep Quit && exit 2
-done
+mplayer -fs -playlist -
+
+#while read url
+#do 
+#	xargs mplayer -fs "$url" | 
+#	grep Quit && exit 2
+#done

@@ -1,6 +1,15 @@
 #!/bin/sh
+#use you-get to play online vedio
 
-for i in {1..8}
-do
-	mplayer $1$i
-done
+[[ "$2" = "-p" ]] && export http_proxy="http://127.0.0.1:8087"
+
+you-get -u $1 | 
+sed -n "/http/p" | 
+#sed -e "s/[][' )(]//g" -e "s/,/\n/g" | 
+mplayer -fs -playlist -
+
+#while read url
+#do 
+#	xargs mplayer -fs "$url" | 
+#	grep Quit && exit 2
+#done
