@@ -12,4 +12,4 @@ read WC
 MAG=`grep /tmp/rar | cut -d \" -f 1 | sed -n ${WC}p`
 echo $MAG
 
-transmission-remote -n tiny:200612031 -w /home/tiny/hd/$DIR -a "$MAG"
+transmission-remote -n tiny:200612031 -w /home/tiny/hd/$DIR/$1 -a "$MAG"

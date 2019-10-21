@@ -12,4 +12,6 @@
 
 MAG=`curl "https://mikanani.me/RSS/Search?searchstr=$1" | cut -d\" -f 16`
 
-transmission-remote -n tiny:200612031 -w /home/tiny/hd/tv -a "$MAG"
+DIR=${2:-$1}
+
+transmission-remote -n tiny:200612031 -w /home/tiny/hd/dm/"$DIR" -a "$MAG"

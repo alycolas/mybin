@@ -9,8 +9,10 @@
 
 
 ## 甜蜜计划
+DIR="$2"
+
 curl "$1" | sed -e 's/x-bittorrent/\n/g' | grep torrent\" | cut -d\" -f5 | \
 	while read MAG
 	do
-		transmission-remote -n tiny:200612031 -w /home/tiny/hd/tv -a "$MAG"
+		transmission-remote -n tiny:200612031 -w /home/tiny/hd/dm/$DIR -a "$MAG"
 	done
