@@ -1,6 +1,6 @@
 #!/bin/sh
 
-curl -s "https://rarbgprx.org/torrents.php?search=$1&order=seeders&by=DESC" | grep lista2 /tmp/rar | sed -e 's/return/\n/g' -e 's/B</\n/g' | grep title | cut -d\" -f3,5,36 > /tmp/rar
+curl -s "https://rarbgprx.org/torrents.php?search=$1&order=seeders&by=DESC" | grep lista2 | sed -e 's/return/\n/g' -e 's/B</\n/g' | grep title | cut -d\" -f3,5,36 > /tmp/rar
 
 DIR=$2
 WC=${3:-"1"}
