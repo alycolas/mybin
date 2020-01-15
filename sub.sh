@@ -11,7 +11,7 @@ curl -s "https://sc.ftqq.com/SCU21184T2d614d48b5363a867d22c51324f8afc05a728a2da6
 PWD="$TR_TORRENT_DIR/$TR_TORRENT_NAME"
 # diff new old |  grep "< " | sed 's/< //g' | while read j 
 # do
-	getsub -o --plex "$PWD"
+	getsub -b --plex "$PWD"
 	#chmod -R 775 "$PWD"
 #	ubliminal download -l en -l zh "$PWD"
 # done
