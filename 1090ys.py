@@ -39,6 +39,7 @@ def play(url):
     vplayurl = vpattern.findall(r.text)[0].strip()
     # print(vplayurl)  # 先打印一下，此时一般应该是空的。
     return vplayurl
+#    return vpattern.findall(r.text)
 
 
 if __name__ == '__main__':

@@ -1,0 +1,94 @@
+#!/bin/bash
+
+cd "$1"
+
+cat > index.html <<EOF
+<html>
+<head>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+:root {
+	--height: 50%;
+}
+.button {
+	background-color: #4CAF50;
+	border: none;
+	color: white;
+	width: 78px;
+	padding: 15px 0px;
+	text-align: center;
+	text-decoration: none;
+	display: inline-block;
+	font-size: 16px;
+	margin: 4px 1px;
+	cursor: pointer;
+}
+video {
+max-width: 100%;
+max-height: 100%;
+height: var(--height);
+}
+.list {
+margin: 2 4 auto;
+}
+body {
+margin: 0 auto;
+}
+.video_div {
+	text-align:center;
+		margin: 0 auto;
+
+	}
+.sp {
+	text-align:center;
+		margin: 0 auto;
+
+	}
+</style>
+</head>
+<body>
+<div class="video_div">
+<video id="video" poster="poster.jpg" controls />
+</div>
+<div class="sp">
+<input type="button" class="button" value="1 倍速" onclick='speed1();'/>
+<input type="button" class="button" value="1.5 倍速" onclick='speed15();'/>
+<input type="button" class="button" value="2 倍速" onclick='speed2();'/>
+</div>
+
+<script>
+var vid = document.getElementById("video");
+function chVideoSrc(src) {
+vid.poster = "fanart.jpg";
+vid.src = src;
+document.documentElement.style.setProperty('--height', 'auto');
+vid.play();
+}
+function speed1() {
+vid.playbackRate = 1;
+}
+function speed15() {
+vid.playbackRate = 1.5;
+}
+function speed2() {
+vid.playbackRate = 2;
+}
+</script>
+
+<div class='list'>
+EOF
+
+
+ls | sed -n -e "/.*\.[mkvp4flMKVP4FL]\{3\}/p" | sed -e "s/.*/<input type=\"button\" class=\"button\" value=\"UNAME\" onclick=\'chVideoSrc\(\"\0\"\);\'\/>/" | sed "s/UNAME\(.*\)\([sS][0-9]\{1,2\}[eE][0-9]\{1,2\}\)/\2\1\2/" >> index.html
+# ls | sed -n -e "s/.*\([sS][0-9]\{1,2\}[eE][0-9]\{1,2\}\).*\.[mkvp4flMKVP4FL]\{3\}/<input type=\"button\" class=\"button\" value=\"\1\" onclick=\'chVideoSrc\(\"\0\"\);\'\/>/p" >> index.html
+
+ls | sed -e "s/.*/<li><a href=\"\0\">\0<\/a><\/li>/" >> index.html
+
+cat >> index.html <<EOF
+</div>
+
+</body>
+</html>
+EOF
+
+cd ..

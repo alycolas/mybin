@@ -1,0 +1,54 @@
+#!/bin/sh
+
+wget -O /tmp/1090 "http://1090ys.com/?c=search&wd=$1&sort=addtime&order=des"
+
+grep lazyload /tmp/1090 | cut -d\" -f4,6 | nl
+
+read WC
+
+if [ ! $WC ]
+then
+	exit
+fi
+
+NUM=`grep lazyload /tmp/1090 | cut -d\" -f4 | sed -e "s/[^0-9]//g"| sed -n ${WC}p`
+NAM=`grep lazyload /tmp/1090 | cut -d\" -f6 | sed -n ${WC}p`
+
+DIR=hd
+
+case "$2" in
+	tv)
+		DIR="hd/tv"
+		;;
+	mov)
+		DIR="hd/movie"
+		;;
+	btv)
+		DIR="backup/tv"
+		;;
+	bmov)
+		DIR="backup/movies"
+		;;
+	dm)
+		DIR="dm"
+		;;
+esac
+
+DIR="$DIR/$NAM"
+
+S=${3:-"1"}
+B=${4:-"0"}
+
+END=`curl http://1090ys.com/show/$NUM.html | grep "$NUM~0" | sed -n '$p' | sed -e 's/.*0~\(.*\)\.html.*/\1/'`
+
+echo $END
+curl -s "https://sc.ftqq.com/SCU21184T2d614d48b5363a867d22c51324f8afc05a728a2da6f1a.send?text=开始下载$NAM$NUM共计$[$END+1]集" -d "&desp=名字：$NAM$NUM %0D%0A%0D%0A目录：$DIR"
+for i in `seq $B $END`;
+do
+	aria2c -o ${NAM}.S${S}E$[$i+1].mp4 -d /home/tiny/$DIR `1090ys.py https://1090ys.com/play/$NUM~0~$i.html`;
+	echo $i
+done
+
+curl -s "https://sc.ftqq.com/SCU21184T2d614d48b5363a867d22c51324f8afc05a728a2da6f1a.send?text=$NAM$NUM" -d "&desp=名字：$NAM$NUM %0D%0A%0D%0A目录：$DIR"
+
+echo $NUM $NAM

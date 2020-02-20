@@ -1,0 +1,63 @@
+#!/bin/bash
+
+cd $1
+
+cat > index.html <<EOF
+<html>
+<head>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/dplayer@1.25.0/dist/DPlayer.min.css">
+<script src="https://cdn.jsdelivr.net/npm/dplayer@1.25.0/dist/DPlayer.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dash@1.1.2/dist/dash.min.js"></script>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+.button {
+	background-color: #4CAF50;
+	border: none;
+	color: white;
+	width: 80px;
+	padding: 15px 0px;
+	text-align: center;
+	text-decoration: none;
+	display: inline-block;
+	font-size: 16px;
+	margin: 4px 1px;
+	cursor: pointer;
+}
+#dplayer {
+	height: 60%;
+}
+.list {
+margin: 2 4 auto;
+}
+body {
+margin: 0 auto;
+}
+</style>
+</head>
+<body>
+
+<div id="dplayer"></div>
+<script>
+const dp = new DPlayer({
+    container: document.getElementById('dplayer'),
+    video: {
+	pic: 'fanart.jpg',
+    },
+});
+</script>
+
+<div class='list'>
+EOF
+
+# ls *mkv | sed -e "s/.*/<a href=\'javascript:void\(0\);\' onclick=\'dp.switchVideo\({ url: \"\0\" },\);\'>S06E02<\/a>/"
+# ls *mkv | sed -e "s/.*/<input type=\"button\" value=\"SSSS\" onclick=\'dp.switchVideo\({ url: \"\0\" },\);\'\/>/" >> index.html
+ls | sed -n -e "s/.*\([sS][0-9]\{1,2\}[eE][0-9]\{1,2\}\).*\.[mkvp4flMKVP4FL]\{3\}/<input type=\"button\" class=\"button\" value=\"\1\" onclick=\'dp.switchVideo\({ url: \"\0\", type: \"auto\", },\); dp.play\(\);\'\/>/p" >> index.html
+
+ls | sed -e "s/.*/<li><a href=\"\0\">\0<\/a><\/li>/" >> index.html
+
+cat >> index.html <<EOF
+</div>
+
+</body>
+</html>
+EOF

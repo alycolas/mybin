@@ -1,9 +1,13 @@
 #!/bin/sh
 
+export http_proxy=http://127.0.0.1:1080
+export https_proxy=http://127.0.0.1:1080
 /home/tiny/.local/bin/rarbg >/dev/null 2>&1 &
 sleep 3
 wget -O /tmp/rarbg "http://127.0.0.1:4444/search/$1?sort=seeders"
 killall rarbg
+unset http_proxy
+unset https_proxy
 
 DIR=hd
 

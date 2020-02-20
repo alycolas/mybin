@@ -1,6 +1,10 @@
 #!/bin/sh
 
+export http_proxy=http://127.0.0.1:1080
+export https_proxy=http://127.0.0.1:1080
 wget -O /tmp/bay  https://thepiratebay.org/search/"$1"/0/7/200
+unset http_proxy
+unset https_proxy
 #wget -O /tmp/bay  https://www.thepiratebay.org/search/"$1"/0/7/200
 # curl -s  https://thepiratebay.org/search/"$1"/0/7/200 > /tmp/bay
 
