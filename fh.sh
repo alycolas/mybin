@@ -10,4 +10,4 @@ read WC
 
 MAG=`grep magnet: /tmp/fh | cut -d \" -f 2 | sed -n ${WC}p`
 
-transmission-remote -n tiny:200612031 -w /home/tiny/hide -a "$MAG"
+transmission-remote -n tiny:200612031 -w /home/tiny/wd/av -a "$MAG"
