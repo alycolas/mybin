@@ -9,9 +9,11 @@
 
 
 ## 甜蜜计划
-
-MAG=`curl "https://mikanani.me/RSS/Search?searchstr=$1" | cut -d\" -f 16`
+MAG=`/usr/local/bin/mikanani -k $1 -d $2`
+# MAG=`curl "https://mikanani.me/RSS/Search?searchstr=$1" | cut -d\" -f 16`
+echo $MAG
 
 DIR=${2:-$1}
+mkdir /home/tiny/dm/"$DIR"
 
 transmission-remote -n tiny:200612031 -w /home/tiny/dm/"$DIR" -a "$MAG"

@@ -1,36 +1,15 @@
 #!/bin/sh
 
-/home/tiny/.local/bin/rarbg >/dev/null 2>&1 &
-sleep 5
-wget -O /tmp/rarbg http://127.0.0.1:4444/search/$1
-killall rarbg
+#export http_proxy=http://127.0.0.1:1080
+curl -x "http://127.0.0.1:1080" -s "http://alyk3.dynu.net:4444/search/$1.1080p?sort=seeders" > /tmp/rar
+sleep 2
 
-DIR=hd
+while grep "No results found" /tmp/rar
+do
+curl -x "http://127.0.0.1:1080" -s "http://alyk3.dynu.net:4444/search/$1.1080p?sort=seeders" > /tmp/rar
+sleep 2
+done
 
-case "$2" in
-	tv)
-		DIR="hd/tv"
-		;;
-	mov)
-		DIR="hd/movie"
-		;;
-	btv)
-		DIR="backup/tv"
-		;;
-	bmov)
-		DIR="backup/movies"
-		;;
-esac
-
-#WC=${4:-"1"}
-WC=1
-
-#grep title /tmp/rarbg | cut -d\> -f2 | cut -d\< -f1 | sed 1d | nl
-
-#read WC
-
-MAG=`grep url /tmp/rarbg | cut -d \" -f 2 | sed -n ${WC}p`
-
-DIR="$DIR/$3"
-
-transmission-remote -n tiny:200612031 -w /home/tiny/$DIR -a "$MAG"
+MAG=`grep url= /tmp/rar | cut -d \" -f 2 | sed -n 1p`
+echo $MAG
+transmission-remote -n tiny:200612031 -w /home/tiny/$2/"$1" -a "$MAG"
