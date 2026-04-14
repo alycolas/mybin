@@ -1,0 +1,629 @@
+#!/usr/bin/env python3
+"""
+Transmission下载完成后自动上传视频文件到Alist
+功能：
+1. 检查目录是否包含"upload_alist"
+2. 只处理当前种子下载的文件
+3. 智能重命名视频文件
+4. 上传到Alist特定目录
+5. 处理并发问题
+"""
+
+import os
+import sys
+import json
+import time
+import logging
+import hashlib
+import re
+import subprocess
+from pathlib import Path
+from typing import List, Dict, Tuple, Optional
+import requests
+from datetime import datetime
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('/var/log/transmission_alist_upload.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+class Config:
+    """配置管理器"""
+
+    DEFAULT_CONFIG = {
+        # Alist配置
+        "alist_url": "http://localhost:5244",
+        "alist_username": "admin",
+        "alist_password": "password",
+
+        # 上传配置
+        "remote_base_path": "/139/影视",
+        "upload_video_only": True,
+        "max_retries": 3,
+        "retry_delay": 5,
+
+        # 重命名配置
+        "rename_video_files": True,
+        "default_season": "S01",
+
+        # 视频文件扩展名
+        "video_extensions": [
+            "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm",
+            "m4v", "mpg", "mpeg", "3gp", "rmvb", "rm", "ts",
+            "m2ts", "vob", "ogv", "divx", "xvid"
+        ],
+
+        # 锁配置
+        "lock_timeout": 60,
+    }
+
+    def __init__(self, config_file: str = None):
+        self.config_file = config_file or os.path.expanduser("~/.config/transmission_alist_upload.json")
+        self.config = self.load_config()
+
+    def load_config(self) -> Dict:
+        """加载配置文件"""
+        if os.path.exists(self.config_file):
+            try:
+                with open(self.config_file, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                # 合并默认配置
+                return {**self.DEFAULT_CONFIG, **config}
+            except Exception as e:
+                logger.error(f"加载配置文件失败: {e}")
+                return self.DEFAULT_CONFIG
+        else:
+            # 创建默认配置文件
+            self.create_default_config()
+            return self.DEFAULT_CONFIG
+
+    def create_default_config(self):
+        """创建默认配置文件"""
+        config_dir = os.path.dirname(self.config_file)
+        os.makedirs(config_dir, exist_ok=True)
+
+        with open(self.config_file, 'w', encoding='utf-8') as f:
+            json.dump(self.DEFAULT_CONFIG, f, indent=4, ensure_ascii=False)
+
+        logger.info(f"已创建默认配置文件: {self.config_file}")
+
+class FileLocker:
+    """文件锁管理器，防止并发冲突"""
+
+    def __init__(self, lock_dir: str = "/tmp/transmission_alist_locks"):
+        self.lock_dir = lock_dir
+        os.makedirs(self.lock_dir, exist_ok=True)
+
+    def get_lock_file(self, torrent_dir: str) -> str:
+        """获取锁文件路径"""
+        dir_hash = hashlib.md5(torrent_dir.encode()).hexdigest()
+        return os.path.join(self.lock_dir, f"{dir_hash}.lock")
+
+    def acquire_lock(self, torrent_dir: str, timeout: int = 60) -> Optional[str]:
+        """获取锁"""
+        lock_file = self.get_lock_file(torrent_dir)
+        start_time = time.time()
+
+        while os.path.exists(lock_file):
+            elapsed = time.time() - start_time
+
+            if elapsed >= timeout:
+                logger.warning(f"等待锁超时 ({timeout}秒)，退出")
+                return None
+
+            logger.info(f"等待锁释放 ({elapsed:.0f}/{timeout} 秒)...")
+            time.sleep(5)
+
+        # 创建锁文件
+        with open(lock_file, 'w') as f:
+            f.write(f"{os.getpid()} {torrent_dir} {datetime.now()}")
+
+        logger.info(f"获取锁成功: {lock_file}")
+        return lock_file
+
+    def release_lock(self, lock_file: str):
+        """释放锁"""
+        if lock_file and os.path.exists(lock_file):
+            os.remove(lock_file)
+            logger.info(f"释放锁: {lock_file}")
+
+    def cleanup_old_locks(self, max_age_minutes: int = 60):
+        """清理旧锁文件"""
+        try:
+            for lock_file in Path(self.lock_dir).glob("*.lock"):
+                if lock_file.stat().st_mtime < time.time() - (max_age_minutes * 60):
+                    lock_file.unlink()
+        except Exception as e:
+            logger.warning(f"清理旧锁文件失败: {e}")
+
+class SeriesRenamer:
+    """剧集重命名器"""
+
+    # 季数正则表达式
+    SEASON_PATTERNS = [
+        r'第([一二三四五六七八九十\d]+)季',  # 中文：第一季
+        r'[Ss](\d{1,2})',  # 英文：S01
+        r'[Ss]eason[\s_]*(\d{1,2})',  # Season 1
+    ]
+
+    # 集数正则表达式
+    EPISODE_PATTERNS = [
+        r'[Ss]\d{1,2}[Ee](\d{1,2})',  # S01E01
+        r'[Ee](\d{1,2})',  # E01
+        r'第(\d{1,2})集',  # 第01集
+        r'[Ee][Pp](\d{1,2})',  # EP01
+        r'[Ee]pisode[\s_]*(\d{1,2})',  # Episode 01
+        r'\b(\d{1,2})\b(?![pP]|\d{3,4})',  # 纯数字01（排除分辨率如1080p）
+    ]
+
+    def __init__(self, default_season: str = "S01"):
+        self.default_season = default_season
+
+    def clean_series_name(self, folder_name: str) -> str:
+        """清理剧集名称，移除季数信息"""
+        # 移除季数标识
+        cleaned = folder_name
+
+        # 移除upload_alist标识
+        cleaned = cleaned.replace("upload_alist", "")
+
+        # 移除常见的季数标识
+        for pattern in self.SEASON_PATTERNS:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+
+        # 移除其他常见标识
+        patterns_to_remove = [
+            r'complete', r'全集', r'[._\-]', r'\s+'
+        ]
+
+        for pattern in patterns_to_remove:
+            cleaned = re.sub(pattern, ' ', cleaned, flags=re.IGNORECASE)
+
+        # 清理空格
+        cleaned = cleaned.strip(' .-_')
+
+        return cleaned if cleaned else folder_name
+
+    def extract_season_from_folder(self, folder_name: str) -> str:
+        """从目录名中提取季数"""
+        # 尝试匹配各种季数格式
+        for pattern in self.SEASON_PATTERNS:
+            match = re.search(pattern, folder_name, re.IGNORECASE)
+            if match:
+                season_num = match.group(1)
+
+                # 转换中文数字为阿拉伯数字
+                chinese_to_arabic = {
+                    '一': '1', '二': '2', '三': '3', '四': '4', '五': '5',
+                    '六': '6', '七': '7', '八': '8', '九': '9', '十': '10'
+                }
+
+                if season_num in chinese_to_arabic:
+                    season_num = chinese_to_arabic[season_num]
+
+                # 格式化为S01
+                season_num = season_num.zfill(2)
+                return f"S{season_num}"
+
+        # 如果提取不到，使用默认值
+        return self.default_season
+
+    def extract_episode_from_filename(self, filename: str) -> str:
+        """从文件名中提取集数"""
+        basename = os.path.splitext(filename)[0]
+
+        for pattern in self.EPISODE_PATTERNS:
+            match = re.search(pattern, basename, re.IGNORECASE)
+            if match:
+                episode_num = match.group(1)
+                # 格式化为E01
+                episode_num = episode_num.zfill(2)
+                return f"E{episode_num}"
+
+        # 如果提取不到，使用默认值
+        return "E01"
+
+    def smart_rename(self, file_path: str, series_name: str, season: str) -> str:
+        """智能重命名文件"""
+        filename = os.path.basename(file_path)
+        extension = os.path.splitext(filename)[1].lower()
+
+        # 提取集数
+        episode = self.extract_episode_from_filename(filename)
+
+        # 构建新文件名
+        new_filename = f"{series_name}.{season}{episode}{extension}"
+
+        # 清理非法字符
+        new_filename = re.sub(r'[\\/*?:"<>|]', '', new_filename)
+
+        return new_filename
+
+class AlistUploader:
+    """Alist上传器"""
+
+    def __init__(self, base_url: str, username: str, password: str):
+        self.base_url = base_url.rstrip('/')
+        self.username = username
+        self.password = password
+        self.token = None
+        self.token_expire = 0
+        self.session = requests.Session()
+
+    def login(self) -> bool:
+        """登录Alist获取token"""
+        try:
+            login_url = f"{self.base_url}/api/auth/login"
+            payload = {
+                "username": self.username,
+                "password": self.password
+            }
+
+            response = self.session.post(
+                login_url,
+                json=payload,
+                timeout=30
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("code") == 200:
+                    self.token = result["data"]["token"]
+                    self.token_expire = time.time() + 3600
+                    logger.info("Alist登录成功")
+                    return True
+                else:
+                    logger.error(f"Alist登录失败: {result.get('message')}")
+            else:
+                logger.error(f"Alist登录HTTP错误: {response.status_code}")
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Alist登录连接错误: {e}")
+        except Exception as e:
+            logger.error(f"Alist登录异常: {e}")
+
+        return False
+
+    def ensure_directory(self, remote_path: str) -> bool:
+        """确保远程目录存在"""
+        try:
+            if not self.token or time.time() > self.token_expire - 300:
+                if not self.login():
+                    return False
+
+            # 创建目录
+            mkdir_url = f"{self.base_url}/api/fs/mkdir"
+            headers = {
+                "Authorization": self.token,
+                "Content-Type": "application/json"
+            }
+
+            response = self.session.put(
+                mkdir_url,
+                json={"path": remote_path},
+                headers=headers,
+                timeout=30
+            )
+
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("code") == 200:
+                    logger.info(f"目录创建成功: {remote_path}")
+                    return True
+                else:
+                    # 目录可能已经存在，这不算错误
+                    if "already exists" in str(result.get("message", "")):
+                        return True
+                    logger.error(f"目录创建失败: {result.get('message')}")
+            else:
+                logger.error(f"目录创建HTTP错误: {response.status_code}")
+
+        except Exception as e:
+            logger.error(f"创建目录异常: {e}")
+
+        return False
+
+    def upload_file(self, local_file: str, remote_path: str) -> bool:
+        """上传文件到Alist"""
+        try:
+            if not self.token or time.time() > self.token_expire - 300:
+                if not self.login():
+                    return False
+
+            # 检查文件是否存在
+            if not os.path.exists(local_file):
+                logger.error(f"文件不存在: {local_file}")
+                return False
+
+            # 获取文件大小
+            file_size = os.path.getsize(local_file)
+
+            # 使用form接口上传（经测试最可靠）
+            upload_url = f"{self.base_url}/api/fs/form"
+            headers = {
+                "Authorization": self.token,
+                "file-path": remote_path
+            }
+
+            with open(local_file, 'rb') as f:
+                files = {'file': (os.path.basename(local_file), f)}
+
+                # 设置超时时间，大文件需要更长时间
+                timeout = 3600 if file_size > 100 * 1024 * 1024 else 300  # 大文件1小时，小文件5分钟
+
+                response = self.session.put(
+                    upload_url,
+                    headers=headers,
+                    files=files,
+                    timeout=timeout
+                )
+
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("code") == 200:
+                    logger.info(f"文件上传成功: {local_file} -> {remote_path}")
+                    return True
+                else:
+                    logger.error(f"文件上传失败: {result.get('message')}")
+            else:
+                logger.error(f"文件上传HTTP错误: {response.status_code}")
+
+        except requests.exceptions.Timeout:
+            logger.error(f"文件上传超时: {local_file}")
+        except requests.exceptions.RequestException as e:
+            logger.error(f"文件上传连接错误: {e}")
+        except Exception as e:
+            logger.error(f"文件上传异常: {e}")
+
+        return False
+
+    def upload_with_retry(self, local_file: str, remote_path: str, max_retries: int = 3, retry_delay: int = 5) -> bool:
+        """带重试机制的上传"""
+        for attempt in range(max_retries):
+            logger.info(f"上传尝试 {attempt + 1}/{max_retries}: {os.path.basename(local_file)}")
+
+            if self.upload_file(local_file, remote_path):
+                return True
+
+            if attempt < max_retries - 1:
+                logger.info(f"等待 {retry_delay} 秒后重试...")
+                time.sleep(retry_delay)
+
+        logger.error(f"文件上传失败，达到最大重试次数: {local_file}")
+        return False
+
+class TransmissionHandler:
+    """Transmission处理器"""
+
+    def __init__(self):
+        # Transmission环境变量
+        self.torrent_dir = os.environ.get('TR_TORRENT_DIR', '')
+        self.torrent_name = os.environ.get('TR_TORRENT_NAME', '')
+        self.torrent_id = os.environ.get('TR_TORRENT_ID', '')
+
+        # 从TR_TORRENT_FILES获取文件列表
+        self.torrent_files_env = os.environ.get('TR_TORRENT_FILES', '')
+
+    def check_upload_alist_condition(self) -> bool:
+        """检查是否满足上传条件"""
+        if not self.torrent_dir:
+            logger.error("未找到下载目录信息")
+            return False
+
+        # 检查目录是否包含"upload_alist"
+        if "upload_alist" in self.torrent_dir:
+            logger.info(f"下载目录包含 'upload_alist': {self.torrent_dir}")
+            return True
+        else:
+            logger.info(f"下载目录不包含 'upload_alist'，跳过处理: {self.torrent_dir}")
+            return False
+
+    def get_last_folder_name(self) -> str:
+        """获取下载目录的最后一个文件夹名"""
+        if not self.torrent_dir:
+            return ""
+
+        # 规范化路径并获取最后一部分
+        path = os.path.normpath(self.torrent_dir)
+        return os.path.basename(path)
+
+    def get_torrent_files(self) -> List[str]:
+        """获取当前种子下载的文件列表"""
+        files = []
+
+        if not self.torrent_dir:
+            return files
+
+        # 方法1: 使用TR_TORRENT_FILES环境变量
+        if self.torrent_files_env:
+            logger.info("使用TR_TORRENT_FILES环境变量获取文件列表")
+
+            for line in self.torrent_files_env.split('\n'):
+                line = line.strip()
+                if not line:
+                    continue
+
+                # 格式通常是 "索引:相对路径"
+                if ':' in line:
+                    # 提取相对路径
+                    relative_path = line.split(':', 1)[1].strip()
+                else:
+                    relative_path = line
+
+                if relative_path:
+                    # 构建完整路径
+                    full_path = os.path.join(self.torrent_dir, relative_path)
+
+                    # 检查文件是否存在
+                    if os.path.isfile(full_path):
+                        files.append(full_path)
+                    else:
+                        # 尝试在torrent_name子目录下查找
+                        if self.torrent_name:
+                            alt_path = os.path.join(self.torrent_dir, self.torrent_name, relative_path)
+                            if os.path.isfile(alt_path):
+                                files.append(alt_path)
+
+        # 方法2: 如果TR_TORRENT_FILES为空，查找目录中所有文件
+        if not files:
+            logger.warning("TR_TORRENT_FILES为空，将处理目录中所有视频文件")
+
+            for root, dirs, filenames in os.walk(self.torrent_dir):
+                for filename in filenames:
+                    full_path = os.path.join(root, filename)
+                    if os.path.isfile(full_path):
+                        files.append(full_path)
+
+        return files
+
+    def is_video_file(self, filename: str, video_extensions: List[str]) -> bool:
+        """检查是否为视频文件"""
+        ext = os.path.splitext(filename)[1].lower().lstrip('.')
+        return ext in video_extensions
+
+    def get_env_info(self) -> Dict:
+        """获取环境变量信息"""
+        return {
+            'torrent_dir': self.torrent_dir,
+            'torrent_name': self.torrent_name,
+            'torrent_id': self.torrent_id,
+            'has_files_env': bool(self.torrent_files_env),
+            'all_env_vars': {k: v for k, v in os.environ.items() if k.startswith('TR_')}
+        }
+
+def main():
+    """主函数"""
+    try:
+        # 加载配置
+        config_manager = Config()
+        config = config_manager.config
+
+        # 初始化Transmission处理器
+        transmission = TransmissionHandler()
+
+        # 检查上传条件
+        if not transmission.check_upload_alist_condition():
+            sys.exit(0)
+
+        # 初始化文件锁
+        locker = FileLocker()
+
+        # 获取锁
+        lock_file = locker.acquire_lock(transmission.torrent_dir, config.get("lock_timeout", 60))
+        if not lock_file:
+            logger.warning("无法获取锁，退出")
+            sys.exit(0)
+
+        try:
+            # 获取种子信息
+            torrent_dir = transmission.torrent_dir
+            last_folder = transmission.get_last_folder_name()
+
+            logger.info(f"开始处理种子: {transmission.torrent_name}")
+            logger.info(f"下载目录: {torrent_dir}")
+            logger.info(f"最后文件夹名: {last_folder}")
+
+            # 初始化重命名器
+            renamer = SeriesRenamer(config.get("default_season", "S01"))
+
+            # 提取剧集信息
+            series_name = renamer.clean_series_name(last_folder)
+            season = renamer.extract_season_from_folder(last_folder)
+
+            logger.info(f"剧集名称: {series_name}")
+            logger.info(f"季数: {season}")
+
+            # 初始化Alist上传器
+            uploader = AlistUploader(
+                config["alist_url"],
+                config["alist_username"],
+                config["alist_password"]
+            )
+
+            # 登录Alist
+            if not uploader.login():
+                logger.error("无法登录Alist，退出")
+                sys.exit(1)
+
+            # 构建远程基础路径
+            remote_base = config["remote_base_path"]
+            if not remote_base.startswith('/'):
+                remote_base = f"/{remote_base}"
+
+            # 添加剧集名称到远程路径
+            remote_base = f"{remote_base.rstrip('/')}/{series_name}"
+            logger.info(f"远程基础路径: {remote_base}")
+
+            # 确保远程目录存在
+            if not uploader.ensure_directory(remote_base):
+                logger.error("无法创建远程基础目录")
+                sys.exit(1)
+
+            # 获取当前种子下载的文件列表
+            all_files = transmission.get_torrent_files()
+
+            if not all_files:
+                logger.info("未找到文件")
+                sys.exit(0)
+
+            logger.info(f"找到 {len(all_files)} 个文件")
+
+            # 处理每个文件
+            video_extensions = config.get("video_extensions", [])
+            rename_files = config.get("rename_video_files", True)
+            upload_video_only = config.get("upload_video_only", True)
+
+            video_count = 0
+            success_count = 0
+
+            for local_file in all_files:
+                filename = os.path.basename(local_file)
+
+                # 检查是否为视频文件
+                if upload_video_only and not transmission.is_video_file(filename, video_extensions):
+                    logger.info(f"跳过非视频文件: {filename}")
+                    continue
+
+                video_count += 1
+
+                # 智能重命名
+                new_filename = ""
+                if rename_files:
+                    new_filename = renamer.smart_rename(local_file, series_name, season)
+                    logger.info(f"重命名: {filename} -> {new_filename}")
+                else:
+                    new_filename = filename
+
+                # 构建远程路径
+                remote_file = f"{remote_base}/{new_filename}"
+
+                # 上传文件（带重试机制）
+                max_retries = config.get("max_retries", 3)
+                retry_delay = config.get("retry_delay", 5)
+
+                if uploader.upload_with_retry(local_file, remote_file, max_retries, retry_delay):
+                    success_count += 1
+
+            logger.info(f"处理完成: 找到 {len(all_files)} 个文件，其中 {video_count} 个视频文件，成功上传 {success_count} 个")
+
+        finally:
+            # 释放锁
+            locker.release_lock(lock_file)
+            # 清理旧锁
+            locker.cleanup_old_locks()
+
+    except KeyboardInterrupt:
+        logger.info("用户中断程序")
+        sys.exit(0)
+    except Exception as e:
+        logger.error(f"程序运行出错: {e}", exc_info=True)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()

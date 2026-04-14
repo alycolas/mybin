@@ -1,12 +1,12 @@
 #!/bin/sh
 
-#export http_proxy=http://127.0.0.1:1080
-curl -x "http://127.0.0.1:1080" -s "http://alyk3.dynu.net:4444/search/$1.1080p?sort=seeders" > /tmp/rar
+#curl -x "http://127.0.0.1:1080" -s "http://alyk3.dynu.net:4444/search/$1.1080p?sort=seeders" > /tmp/rar
+curl -s "https://alyk3.dynu.net/search/$1.1080p?sort=seeders" > /tmp/rar
 sleep 2
 
 while grep "No results found" /tmp/rar
 do
-curl -x "http://127.0.0.1:1080" -s "http://alyk3.dynu.net:4444/search/$1.1080p?sort=seeders" > /tmp/rar
+curl -s "https://alyk3.dynu.net/search/$1.1080p?sort=seeders" > /tmp/rar
 sleep 2
 done
 

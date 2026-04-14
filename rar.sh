@@ -1,12 +1,13 @@
 #!/bin/sh
 
-export http_proxy=http://127.0.0.1:1080
-curl -s "http://alyk3.dynu.net:4444/search/$1?sort=seeders" > /tmp/rar
+#export http_proxy=http://127.0.0.1:1080
+curl -s "http://23.234.231.104/search/$1?sort=seeders" > /tmp/rar
+#curl -s "https://alyk3.dynu.net/search/$1?sort=seeders" > /tmp/rar
 sleep 2
 
 while grep "No results found" /tmp/rar
 do
-curl -s "http://alyk3.dynu.net:4444/search/$1?sort=seeders" > /tmp/rar
+curl -s "https://alyk3.dynu.net/search/$1?sort=seeders" > /tmp/rar
 sleep 2
 done
 
@@ -20,8 +21,8 @@ read WC
 
 for i in `echo $WC`
 do
-MAG=`grep url= /tmp/rar | cut -d \" -f 2 | sed -n ${i}p`
-#MAG=`grep url= /tmp/rar | cut -d \" -f 2 | sed -n ${WC}p`
-echo $MAG
-transmission-remote -n tiny:200612031 -w /home/tiny/$DIR/"$1" -a "$MAG"
+    MAG=`grep url= /tmp/rar | cut -d \" -f 2 | sed -n ${i}p`
+    #MAG=`grep url= /tmp/rar | cut -d \" -f 2 | sed -n ${WC}p`
+    echo $MAG
+    transmission-remote -n tiny:200612031 -w /home/tiny/$DIR/"$1" -a "$MAG"
 done

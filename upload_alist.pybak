@@ -1,0 +1,885 @@
+#!/usr/bin/env python3
+"""
+Transmission下载完成后自动上传视频文件到Alist
+优化版本：如果无法提取到剧集信息，则不重命名
+"""
+
+import os
+import sys
+import json
+import time
+import logging
+import hashlib
+import re
+import shutil
+from pathlib import Path
+from typing import List, Dict, Tuple, Optional
+import requests
+from datetime import datetime
+
+# 配置日志
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('/tmp/transmission_alist_upload.log'),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+class Config:
+    """配置管理器"""
+
+    DEFAULT_CONFIG = {
+        # Alist配置
+        "alist_url": "http://localhost:5244",
+        "alist_username": "admin",
+        "alist_password": "password",
+
+        # 上传配置
+        "remote_base_path": "/139/影视",
+        "upload_video_only": True,
+        "max_retries": 3,
+        "retry_delay": 5,
+
+        # 重命名配置
+        "rename_video_files": True,
+        "default_season": "S01",
+
+        # 视频文件扩展名
+        "video_extensions": [
+            "mp4", "mkv", "avi", "mov", "wmv", "flv", "webm",
+            "m4v", "mpg", "mpeg", "3gp", "rmvb", "rm", "ts",
+            "m2ts", "vob", "ass", "srt", "ogv", "divx", "xvid"
+        ],
+
+        # 路径配置
+        "local_base_path": "/home/tiny/upload_alist",
+        "alist_mount_base": "/local/upload_alist",
+
+        # 关键词配置
+        "upload_keyword": "upload_alist",
+
+        # 锁配置
+        "lock_timeout": 60,
+
+        # API配置
+        "use_copy_api": True,
+
+        # 优化配置
+        "skip_existing_files": True,
+        "dry_run": True,
+        "include_total_episodes": True,
+        "min_episode_number": 0,  # 最小有效集数，低于此值视为无效
+        "max_episode_number": 999,  # 最大有效集数，高于此值视为无效
+    }
+
+    def __init__(self, config_file: str = None):
+        self.config_file = config_file or os.path.expanduser("~/.config/transmission_alist_upload.json")
+        self.config = self.load_config()
+
+    def load_config(self) -> Dict:
+        if os.path.exists(self.config_file):
+            try:
+                with open(self.config_file, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                return {**self.DEFAULT_CONFIG, **config}
+            except Exception as e:
+                logger.error(f"加载配置文件失败: {e}")
+                return self.DEFAULT_CONFIG
+        else:
+            self.create_default_config()
+            return self.DEFAULT_CONFIG
+
+    def create_default_config(self):
+        config_dir = os.path.dirname(self.config_file)
+        os.makedirs(config_dir, exist_ok=True)
+        with open(self.config_file, 'w', encoding='utf-8') as f:
+            json.dump(self.DEFAULT_CONFIG, f, indent=4, ensure_ascii=False)
+        logger.info(f"已创建默认配置文件: {self.config_file}")
+
+class FileLocker:
+    """文件锁管理器"""
+
+    def __init__(self, lock_dir: str = "/tmp/transmission_alist_locks"):
+        self.lock_dir = lock_dir
+        os.makedirs(self.lock_dir, exist_ok=True)
+
+    def get_lock_file(self, torrent_dir: str) -> str:
+        dir_hash = hashlib.md5(torrent_dir.encode()).hexdigest()
+        return os.path.join(self.lock_dir, f"{dir_hash}.lock")
+
+    def acquire_lock(self, torrent_dir: str, timeout: int = 60) -> Optional[str]:
+        lock_file = self.get_lock_file(torrent_dir)
+        start_time = time.time()
+
+        while os.path.exists(lock_file):
+            elapsed = time.time() - start_time
+            if elapsed >= timeout:
+                logger.warning(f"等待锁超时 ({timeout}秒)，退出")
+                return None
+            logger.info(f"等待锁释放 ({elapsed:.0f}/{timeout} 秒)...")
+            time.sleep(5)
+
+        with open(lock_file, 'w') as f:
+            f.write(f"{os.getpid()} {torrent_dir} {datetime.now()}")
+
+        logger.info(f"获取锁成功: {lock_file}")
+        return lock_file
+
+    def release_lock(self, lock_file: str):
+        if lock_file and os.path.exists(lock_file):
+            os.remove(lock_file)
+            logger.info(f"释放锁: {lock_file}")
+
+    def cleanup_old_locks(self, max_age_minutes: int = 60):
+        try:
+            for lock_file in Path(self.lock_dir).glob("*.lock"):
+                if lock_file.stat().st_mtime < time.time() - (max_age_minutes * 60):
+                    lock_file.unlink()
+        except Exception as e:
+            logger.warning(f"清理旧锁文件失败: {e}")
+
+class UniversalAnimeInfoExtractor:
+    """通用动漫信息提取器"""
+
+    def __init__(self, config: Dict):
+        self.config = config
+        self.default_season = config.get("default_season", "S01")
+
+        # 中文数字映射
+        self.cn_map = {
+            '一': '1', '二': '2', '三': '3', '四': '4', '五': '5',
+            '六': '6', '七': '7', '八': '8', '九': '9', '十': '10',
+            '1': '1', '2': '2', '3': '3', '4': '4', '5': '5',
+            '6': '6', '7': '7', '8': '8', '9': '9', '10': '10',
+        }
+
+    def extract_info_from_filename(self, filename: str) -> Dict[str, str]:
+        """从文件名中提取季数、集数和总集数"""
+        # 初始化结果
+        result = {
+            "season": self.default_season,
+            "episode": "",  # 默认为空，表示未找到有效集数
+            "total_episode": "",
+            "raw_episode": "",  # 原始集数字符串
+            "has_episode_info": False,  # 标记是否找到有效集数
+        }
+
+        # 1. 预处理：剔除已知干扰
+        clean_name = re.sub(
+            r'1920x1080|1280x720|1080p|720p|2160p|4k|202[0-9]|'
+            r'x264|hevc|10bit|aac|mp4|mkv|avc|webrip|web-dl|webdl|'
+            r'srt|ass|cht|chs|big5|gb|bahamut|viutv|cr|abema|'
+            r'remux|opus|pgs|简繁|双语|内封|内嵌|'
+            r'\[.*?\]|\(.*?\)|【.*?】',
+            '', filename, flags=re.I
+        )
+
+        # 2. 识别季 (Season) - 使用通用匹配
+        season_patterns = [
+            r'[Ss](?:eason)?[\s_]*(\d{1,2})',  # S1, Season 1
+            r'第\s*([一二三四五六七八九十\d]+)\s*季',  # 第一季
+            r'Part\s*(\d{1,2})',  # Part 1
+            r'Vol\.\s*(\d{1,2})',  # Vol.1
+            r'(\d+)[季部]',  # 3季, 3部
+        ]
+
+        for pattern in season_patterns:
+            match = re.search(pattern, clean_name, re.I)
+            if match:
+                s_val = match.group(1)
+                # 中文数字转换
+                season_num = self.cn_map.get(s_val, s_val)
+                try:
+                    result["season"] = f"S{int(season_num):02d}"
+                    break
+                except ValueError:
+                    continue
+
+        # 3. 识别集 (Episode) 和 总集数 (Total EP)
+        # A. 提取总集数：识别类似 06(30) 中的 (30)
+        total_match = re.search(r'\((\d{2,4})\)', filename)
+        if total_match:
+            result["total_episode"] = total_match.group(1)
+
+        # B. 提取主集数
+        ep_patterns = [
+            r'\[(\d{1,3}(?:\.5)?)(?:v\d+)?(?:[ _].*?)?\]',  # [01v2] 或 [06_...] 或 [09]
+            r'【(\d{1,3}(?:\.5)?)】',  # 【29】
+            r' - (\d{1,3}(?:-\d{1,3})?)',  # - 01 或 - 01-02
+            r'第\s*(\d+(?:\.5)?)\s*[集话]',  # 第27集
+            r'\](\d{1,3})\[',  # ]06[
+            r'\s(\d{1,3})\s\[',  # 06 [
+            r'(\d{1,3})\.(?!\d{3,4}[pP])',  # 01. (排除分辨率)
+        ]
+
+        for p in ep_patterns:
+            m = re.search(p, filename, re.I)
+            if m:
+                ep_value = m.group(1)
+                result["raw_episode"] = ep_value
+
+                # 检查是否有效集数
+                min_ep = self.config.get("min_episode_number", 0)
+                max_ep = self.config.get("max_episode_number", 1899)
+
+                if '-' in ep_value:
+                    # 处理范围集数（如01-02）
+                    try:
+                        start_ep, end_ep = map(int, ep_value.split('-'))
+                        if min_ep <= start_ep <= max_ep and min_ep <= end_ep <= max_ep:
+                            result["episode"] = ep_value
+                            result["has_episode_info"] = True
+                    except ValueError:
+                        pass
+                else:
+                    # 格式化单个集数
+                    try:
+                        ep_num = int(ep_value)
+                        if min_ep <= ep_num <= max_ep:
+                            result["episode"] = f"E{ep_num:02d}"
+                            result["has_episode_info"] = True
+                    except ValueError:
+                        pass
+                break
+
+        # 如果还没有找到集数，尝试其他模式
+        if not result["has_episode_info"]:
+            additional_patterns = [
+                r'\s(\d{1,3})\s',  # 独立数字（有空格）
+                r'(\d{1,3})[\]\)]',  # 数字后跟]或)
+            ]
+
+            for p in additional_patterns:
+                m = re.search(p, clean_name)
+                if m:
+                    ep_value = m.group(1)
+                    result["raw_episode"] = ep_value
+
+                    # 检查是否有效集数
+                    min_ep = self.config.get("min_episode_number", 1)
+                    max_ep = self.config.get("max_episode_number", 999)
+
+                    try:
+                        ep_num = int(ep_value)
+                        if min_ep <= ep_num <= max_ep:
+                            result["episode"] = f"E{ep_num:02d}"
+                            result["has_episode_info"] = True
+                            break
+                    except ValueError:
+                        continue
+
+        # 针对 01-02 这种特殊情况
+        if not result["has_episode_info"] and '-' in result["raw_episode"]:
+            try:
+                start_ep, end_ep = map(int, result["raw_episode"].split('-'))
+                min_ep = self.config.get("min_episode_number", 1)
+                max_ep = self.config.get("max_episode_number", 999)
+                if min_ep <= start_ep <= max_ep and min_ep <= end_ep <= max_ep:
+                    result["episode"] = result["raw_episode"]
+                    result["has_episode_info"] = True
+            except ValueError:
+                pass
+
+        return result
+
+    def extract_season_from_folder(self, folder_name: str) -> str:
+        """从文件夹名提取季数"""
+        # 移除upload_keyword
+        upload_keyword = self.config.get("upload_keyword", "upload_alist")
+        clean_folder = folder_name.replace(upload_keyword, "")
+
+        # 通用季数匹配模式
+        season_patterns = [
+            r'[Ss](?:eason)?[\s_]*(\d{1,2})',  # S1, Season 1
+            r'第\s*([一二三四五六七八九十\d]+)\s*季',  # 第一季
+            r'Part\s*(\d{1,2})',  # Part 1
+            r'(\d+)[季部]',  # 3季, 3部
+        ]
+
+        for pattern in season_patterns:
+            match = re.search(pattern, clean_folder, re.I)
+            if match:
+                s_val = match.group(1)
+                # 中文数字转换
+                season_num = self.cn_map.get(s_val, s_val)
+                try:
+                    return f"S{int(season_num):02d}"
+                except ValueError:
+                    continue
+
+        return self.default_season
+
+    def clean_series_name(self, folder_name: str) -> str:
+        """清理剧集名称"""
+        # 移除upload_keyword
+        upload_keyword = self.config.get("upload_keyword", "upload_alist")
+        cleaned = folder_name.replace(upload_keyword, "")
+
+        # 移除季数信息
+        patterns = [
+            r'[第]?[一二三四五六七八九十\d]+季',
+            r'[Ss](eason)?[\s_]*\d{1,2}',
+            r'[Pp](art)?[\s_]*\d{1,2}',
+            r'[Cc]omplete',
+            r'全集',
+            r'\[.*?\]',
+            r'\(.*?\)',
+            r'【.*?】',
+        ]
+
+        for pattern in patterns:
+            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
+
+        # 清理特殊字符和空格
+        cleaned = re.sub(r'[._\-]+', ' ', cleaned)
+        cleaned = cleaned.strip()
+
+        return cleaned if cleaned else folder_name
+
+    def format_episode_string(self, season: str, episode: str) -> str:
+        """格式化集数字符串，将范围集数转换为 SxxExx-Exx 格式"""
+        if not episode:
+            return ""
+
+        if '-' in episode:
+            # 处理范围集数，如 "01-02"
+            parts = episode.split('-')
+            if len(parts) == 2:
+                try:
+                    start_ep = int(parts[0])
+                    end_ep = int(parts[1])
+                    # 格式化为 E01-E02
+                    return f"E{start_ep:02d}-E{end_ep:02d}"
+                except ValueError:
+                    # 如果转换失败，保持原样
+                    return episode
+        elif episode.startswith('E'):
+            # 已经是标准格式
+            return episode
+        else:
+            # 单个集数但格式不对
+            try:
+                ep_num = int(episode)
+                return f"E{ep_num:02d}"
+            except ValueError:
+                return episode
+
+    def extract_series_info(self, folder_name: str, filename: str) -> Dict[str, str]:
+        """提取完整的剧集信息"""
+        # 首先尝试从文件夹名提取季数
+        season = self.extract_season_from_folder(folder_name)
+
+        # 从文件名中提取信息
+        file_info = self.extract_info_from_filename(filename)
+
+        # 如果文件夹中没有提取到季数，但文件名中有，使用文件名中的季数
+        if season == self.default_season and file_info["season"] != self.default_season:
+            season = file_info["season"]
+
+        # 格式化集数字符串
+        formatted_episode = ""
+        if file_info["has_episode_info"]:
+            formatted_episode = self.format_episode_string(season, file_info["episode"])
+
+        # 清理剧集名称
+        series_name = self.clean_series_name(folder_name)
+
+        return {
+            "series_name": series_name,
+            "season": season,
+            "episode": formatted_episode,  # 使用格式化后的集数，如果没有则为空字符串
+            "raw_episode": file_info["raw_episode"],  # 保留原始集数字符串
+            "total_episode": file_info["total_episode"],
+            "original_filename": filename,
+            "has_episode_info": file_info["has_episode_info"],  # 标记是否找到有效集数
+        }
+
+class FileScanner:
+    """文件扫描器"""
+
+    def __init__(self, config: Dict):
+        self.config = config
+        self.video_extensions = set(ext.lower() for ext in config.get("video_extensions", []))
+
+    def is_video_file(self, filename: str) -> bool:
+        """检查是否为视频文件"""
+        ext = os.path.splitext(filename)[1].lower().lstrip('.')
+        return ext in self.video_extensions
+
+    def scan_directory(self, torrent_dir: str) -> List[Dict]:
+        """扫描目录中的视频文件"""
+        files_to_process = []
+
+        try:
+            for root, dirs, filenames in os.walk(torrent_dir):
+                for filename in filenames:
+                    if self.is_video_file(filename):
+                        file_path = os.path.join(root, filename)
+                        files_to_process.append({
+                            "path": file_path,
+                            "filename": filename,
+                            "relative_path": os.path.relpath(file_path, torrent_dir)
+                        })
+
+            logger.info(f"在目录 {torrent_dir} 中找到 {len(files_to_process)} 个视频文件")
+        except Exception as e:
+            logger.error(f"扫描目录失败: {e}")
+
+        return files_to_process
+
+class AlistUploader:
+    """Alist上传器"""
+
+    def __init__(self, config: Dict):
+        self.config = config
+        self.base_url = config["alist_url"].rstrip('/')
+        self.token = None
+        self.token_expire = 0
+        self.session = requests.Session()
+        self.session.headers.update({
+            "User-Agent": "Transmission-Alist-Uploader/1.0"
+        })
+
+    def login(self) -> bool:
+        """登录Alist"""
+        try:
+            login_url = f"{self.base_url}/api/auth/login"
+            payload = {
+                "username": self.config["alist_username"],
+                "password": self.config["alist_password"]
+            }
+
+            response = self.session.post(login_url, json=payload, timeout=30)
+
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("code") == 200:
+                    self.token = result["data"]["token"]
+                    self.token_expire = time.time() + 3600
+                    logger.info("Alist登录成功")
+                    return True
+                else:
+                    logger.error(f"Alist登录失败: {result.get('message')}")
+            else:
+                logger.error(f"Alist登录HTTP错误: {response.status_code}")
+
+        except Exception as e:
+            logger.error(f"Alist登录异常: {e}")
+
+        return False
+
+    def ensure_token(self) -> bool:
+        """确保token有效"""
+        if not self.token or time.time() > self.token_expire - 300:
+            return self.login()
+        return True
+
+    def ensure_directory(self, remote_path: str) -> bool:
+        """确保远程目录存在"""
+        if not self.ensure_token():
+            return False
+
+        try:
+            mkdir_url = f"{self.base_url}/api/fs/mkdir"
+            headers = {"Authorization": self.token}
+
+            response = self.session.post(mkdir_url, json={"path": remote_path},
+                                        headers=headers, timeout=30)
+
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("code") == 200:
+                    logger.debug(f"目录创建成功: {remote_path}")
+                    return True
+                else:
+                    error_msg = result.get("message", "")
+                    if "already exists" in error_msg.lower() or "目录已存在" in error_msg:
+                        logger.debug(f"目录已存在: {remote_path}")
+                        return True
+                    logger.error(f"目录创建失败: {error_msg}")
+            else:
+                logger.error(f"目录创建HTTP错误: {response.status_code}")
+
+        except Exception as e:
+            logger.error(f"创建目录异常: {e}")
+
+        return False
+
+    def check_file_exists(self, remote_dir: str, filename: str) -> bool:
+        """检查远程文件是否已存在"""
+        if not self.ensure_token():
+            return False
+
+        try:
+            list_url = f"{self.base_url}/api/fs/list"
+            headers = {"Authorization": self.token}
+
+            response = self.session.post(list_url, json={"path": remote_dir},
+                                        headers=headers, timeout=30)
+
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("code") == 200:
+                    for item in result.get("data", {}).get("content", []):
+                        if not item.get("is_dir", True) and item.get("name") == filename:
+                            return True
+            return False
+
+        except Exception as e:
+            logger.error(f"检查文件存在异常: {e}")
+            return False
+
+    def copy_files(self, src_dir: str, dst_dir: str, filenames: List[str]) -> bool:
+        """使用copy API复制文件"""
+        if not self.ensure_token():
+            return False
+
+        try:
+            copy_url = f"{self.base_url}/api/fs/copy"
+            headers = {"Authorization": self.token}
+            payload = {
+                "src_dir": src_dir,
+                "dst_dir": dst_dir,
+                "names": filenames
+            }
+
+            response = self.session.post(copy_url, json=payload, headers=headers, timeout=3600)
+
+            if response.status_code == 200:
+                result = response.json()
+                if result.get("code") == 200:
+                    logger.info(f"文件复制成功: {len(filenames)} 个文件")
+                    return True
+                else:
+                    logger.error(f"文件复制失败: {result.get('message')}")
+            else:
+                logger.error(f"文件复制HTTP错误: {response.status_code}")
+
+        except Exception as e:
+            logger.error(f"文件复制异常: {e}")
+
+        return False
+
+def test_universal_extractor():
+    """测试通用动漫信息提取器"""
+    test_samples = [
+        "[BeanSub&FZSD&LoliHouse] Jigokuraku - 18",
+        "[BeanSub&FZSD&LoliHouse] Jigokuraku - 17",
+        "[Nekomoe kissaten&LoliHouse] Sousou no Frieren - 31 [WebRip 1080p HEVC-8bit AAC ASSx2].mkv",
+        "[Dynamis One] Ichigo Aika - 05 (ABEMA 1920x1080 AVC AAC MP4) [78CFDEED].mp4",
+        "[Dynamis One] Ichigo Aika - 02 (ABEMA 1920x1080 AVC AAC MP4) [AD11C14F].mp4",
+        "[Dynamis One] Ichigo Aika - 01 (ABEMA 1920x1080 AVC AAC MP4) [D2311EAC].mp4",
+        "[Sakurato] One Punch Man (2025) [09][AVC-8bit 1080p AAC][CHS].mp4",
+        "[Dynamis One] One Punch Man 3 - 08 (CR 1920x1080 AVC AAC MKV) [8806E463].mkv",
+        "[HYSUB]ONE PUNCH MAN[31][GB_MP4][1920X1080].mp4",
+        "[LoliHouse] One-Punch Man S3 - 06(30) [WebRip 1080p HEVC-10bit AAC SRTx2].mkv",
+        "[LoliHouse] One-Punch Man S3 - 05(29) [WebRip 1080p HEVC-10bit AAC SRTx2].mkv",
+        "[Skymoon-Raws] One Punch Man Season 3 - 04 [ViuTV][WEB-DL][CHT][SRT][1080p][AVC AAC].mkv",
+        "[ANi] 一拳超人(第三季) - 27 [1080P][Baha][WEB-DL][AAC AVC][CHT].mp4",
+        "[阿特拉斯字幕组·雪原市出差所][命运-奇异赝品_Fate／strange Fake][06_彷徨之王的摇滚乐][简繁英内封PGS][英语配音版_English Dub][Web-DL Remux][1080p AVC AAC].mkv",
+        "[晚街与灯][命运-奇异赝品_Fate strange Fake][06 彷徨之王的摇滚][WebRip][1080P_AVC_AAC][繁日双语内嵌]",
+        "[沸班亚马制作组] Fate-strange Fake - 06 [IQIYI WebRip 2160p HEVC OPUS][简繁内封字幕]",
+        "[黒ネズミたち] Fate/strange Fake - 06 (CR 1920x1080 AVC AAC MKV)",
+        "[ANi] Fatestrange Fake / Fate／strange Fake - 06 [1080P][Baha][WEB-DL][AAC AVC][CHT][MP4]",
+        "[绿茶字幕组] 命运-奇异赝品 / Fate Srange Fake [05][WebRip][1080p][繁日内嵌]",
+        "[桜都字幕组] 命运奇异赝品 / Fate Strange Fake [05][1080P][简繁日内封]",
+        "[❀拨雪寻春❀] 命运 - 奇异赝品 / Fate/strange Fake - 04 [WebRip][HEVC-10bit 1080p][简繁日内封]",
+        "[LoliHouse] 一拳超人3 / One-Punch Man S3 / ワンパンマン 3 - 12(36) [WebRip 1080p HEVC-10bit AAC][简繁内封字幕]",
+        "[霜庭云花Sub][命运/奇异赝品 / Fate/strange Fake][01v2][1080P][AVC AAC][简日双语][WebRip]",
+        "[桜都字幕组] 命运奇异赝品： 黎明低语 / Fate Strange Fake： Whispers of Dawn [00][1080p]",
+        "[ANi] Fatestrange Fake / Fate／strange Fake - 01-02 [1080P][Baha][WEB-DL][AAC AVC][CHT][MP4]",
+        "【幻樱字幕组】【10月新番】【一拳超人 ONE PUNCH MAN】【29】【BIG5_MP4】【1280X720】",
+        # 测试没有集信息的文件
+        "No_Episode_Info_Test.mkv",
+        "Another.Test.File.2024.mp4",
+        "Special.OVA.1080p.mkv",
+    ]
+
+    # 模拟文件夹名
+    folder_name = "test"
+
+    # 创建配置和提取器
+    config = {
+        "default_season": "S01",
+        "upload_keyword": "upload_alist",
+        "min_episode_number": 00,
+        "max_episode_number": 999,
+    }
+    extractor = UniversalAnimeInfoExtractor(config)
+
+    print(f"{'Index':<5} | {'Has EP':<6} | {'Original Filename':<60} | {'Series':<15} | {'Season':<6} | {'Episode':<12} | {'Total':<6} | {'New Filename'}")
+    print("-" * 165)
+
+    for idx, original_filename in enumerate(test_samples, 1):
+        # 提取剧集信息
+        series_info = extractor.extract_series_info(folder_name, original_filename)
+
+        # 生成新文件名
+        ext = os.path.splitext(original_filename)[1].lower()
+        if not ext:
+            ext = ".mkv"  # 默认扩展名
+
+        # 构建新文件名
+        if series_info["has_episode_info"] and series_info["episode"]:
+            # 有集信息，进行重命名
+            new_name = f"{series_info['series_name']}.{series_info['season']}{series_info['episode']}"
+            if series_info['total_episode']:
+                new_name += f"({series_info['total_episode']})"
+            new_name += ext
+            action = "重命名"
+        else:
+            # 没有集信息，保持原文件名
+            new_name = original_filename
+            action = "原文件名"
+
+        # 清理非法字符
+        new_name = re.sub(r'[\\/*?:"<>|]', '', new_name)
+
+        # 截短显示
+        short_original = (original_filename[:55] + '..') if len(original_filename) > 55 else original_filename
+        short_new = (new_name[:40] + '..') if len(new_name) > 40 else new_name
+
+        print(f"{idx:<5} | {'是' if series_info['has_episode_info'] else '否':<6} | {short_original:<60} | "
+              f"{series_info['series_name'][:15]:<15} | {series_info['season']:<6} | "
+              f"{series_info['episode'] if series_info['episode'] else '-':<12} | "
+              f"{series_info['total_episode'] if series_info['total_episode'] else '-':<6} | {short_new} ({action})")
+
+def main():
+    """主函数"""
+    try:
+        # 加载配置
+        config_manager = Config()
+        config = config_manager.config
+
+        # 检查环境变量
+        torrent_dir = os.environ.get('TR_TORRENT_DIR', '')
+        torrent_name = os.environ.get('TR_TORRENT_NAME', '')
+
+        if not torrent_dir:
+            logger.error("未找到TR_TORRENT_DIR环境变量")
+            sys.exit(1)
+
+        # 检查是否包含配置的关键词
+        upload_keyword = config.get("upload_keyword", "upload_alist")
+        if upload_keyword not in torrent_dir:
+            logger.info(f"下载目录不包含'{upload_keyword}'，跳过处理: {torrent_dir}")
+            sys.exit(0)
+
+        logger.info(f"开始处理种子: {torrent_name}")
+        logger.info(f"下载目录: {torrent_dir}")
+        logger.info(f"使用关键词: {upload_keyword}")
+
+        # 干跑模式提示
+        if config.get("dry_run", False):
+            logger.info("=== 干跑模式开启，只记录不实际操作 ===")
+
+        # 初始化文件锁
+        locker = FileLocker()
+        lock_file = locker.acquire_lock(torrent_dir, config.get("lock_timeout", 60))
+        if not lock_file:
+            sys.exit(0)
+
+        try:
+            # 初始化组件
+            file_scanner = FileScanner(config)
+            extractor = UniversalAnimeInfoExtractor(config)
+
+            # 获取最后一个文件夹名
+            last_folder = os.path.basename(os.path.normpath(torrent_dir))
+            logger.info(f"最后文件夹名: {last_folder}")
+
+            # 扫描需要处理的文件
+            files_to_process = file_scanner.scan_directory(torrent_dir)
+
+            if not files_to_process:
+                logger.info("没有需要处理的视频文件")
+                sys.exit(0)
+
+            # 处理文件
+            processed_files = []
+            for file_info in files_to_process:
+                original_filename = file_info['filename']
+                original_path = file_info['path']
+                logger.info(f"处理文件: {original_filename}")
+
+                # 提取剧集信息
+                series_info = extractor.extract_series_info(last_folder, original_filename)
+
+                if series_info["has_episode_info"] and series_info["episode"]:
+                    # 有集信息，进行重命名
+                    logger.info(f"提取到剧集信息: 系列={series_info['series_name']}, "
+                              f"季={series_info['season']}, 集={series_info['episode']}, "
+                              f"总集数={series_info['total_episode']}")
+
+                    # 生成新文件名
+                    ext = os.path.splitext(original_filename)[1].lower()
+                    if not ext:
+                        ext = ".mkv"  # 默认扩展名
+
+                    # 构建新文件名
+                    new_name = f"{series_info['series_name']}.{series_info['season']}{series_info['episode']}"
+                    if config.get("include_total_episodes", True) and series_info['total_episode']:
+                        new_name += f"({series_info['total_episode']})"
+                    new_name += ext
+
+                    # 清理非法字符
+                    new_name = re.sub(r'[\\/*?:"<>|]', '', new_name)
+
+                    # 构建新文件路径
+                    new_file_path = os.path.join(torrent_dir, new_name)
+
+                    action = "重命名并移动"
+                else:
+                    # 没有集信息，不重命名
+                    logger.info(f"未提取到有效剧集信息，保持原文件名")
+
+                    # 使用原文件名
+                    new_name = original_filename
+
+                    # 如果文件不在根目录，需要移动到根目录
+                    if original_path != os.path.join(torrent_dir, original_filename):
+                        new_file_path = os.path.join(torrent_dir, original_filename)
+                        action = "移动（不重命名）"
+                    else:
+                        new_file_path = original_path
+                        action = "保持原状"
+
+                # 检查目标文件是否已存在
+                if os.path.exists(new_file_path) and new_file_path != original_path:
+                    # 添加时间戳避免冲突
+                    name, ext = os.path.splitext(new_name)
+                    timestamp = int(time.time() % 10000)  # 只取后4位
+                    new_name = f"{name}_{timestamp:04d}{ext}"
+                    new_file_path = os.path.join(torrent_dir, new_name)
+                    logger.info(f"目标文件已存在，添加时间戳: {new_name}")
+
+                # 执行移动操作
+                if not config.get("dry_run", False) and new_file_path != original_path:
+                    try:
+                        # 移动文件到根目录
+                        shutil.move(original_path, new_file_path)
+                        logger.info(f"{action}: {original_filename} -> {new_name}")
+                    except Exception as e:
+                        logger.error(f"移动文件失败: {e}")
+                        # 移动失败，使用原文件
+                        new_file_path = original_path
+                        new_name = original_filename
+                elif config.get("dry_run", False) and new_file_path != original_path:
+                    logger.info(f"[干跑] 将{action}: {original_filename} -> {new_name}")
+                elif new_file_path == original_path:
+                    logger.info(f"文件已在根目录，无需移动")
+
+                # 记录处理后的文件信息
+                processed_files.append({
+                    "original_filename": original_filename,
+                    "new_filename": new_name,
+                    "series_info": series_info,
+                    "path": new_file_path,
+                    "renamed": series_info["has_episode_info"] and series_info["episode"] != ""
+                })
+
+            # 上传文件
+            if config.get("use_copy_api", True) and processed_files:
+                # 初始化Alist上传器
+                uploader = AlistUploader(config)
+
+                # 登录Alist
+                if not uploader.login():
+                    logger.error("无法登录Alist，退出")
+                    sys.exit(1)
+
+                # 计算Alist路径
+                local_base_path = config.get("local_base_path", "/home/tiny/upload_alist")
+                alist_mount_base = config.get("alist_mount_base", "/local/upload_alist")
+                remote_base_path = config["remote_base_path"]
+
+                # 构建路径
+                relative_path = os.path.relpath(torrent_dir, local_base_path)
+                src_dir = f"{alist_mount_base}/{relative_path}" if relative_path != "." else alist_mount_base
+                src_dir = src_dir.replace('\\', '/')
+
+                # 使用第一个文件的系列信息（如果有）
+                series_name = None
+                for file_info in processed_files:
+                    if file_info["renamed"]:
+                        series_name = file_info["series_info"]["series_name"]
+                        break
+
+                if series_name:
+                    # 有重命名的文件，使用系列名称作为远程目录
+                    dst_dir = f"{remote_base_path.rstrip('/')}/{series_name}"
+                else:
+                    # 所有文件都没有重命名，使用文件夹名作为远程目录
+                    dst_dir = f"{remote_base_path.rstrip('/')}/{last_folder.replace(upload_keyword, '').strip()}"
+
+                logger.info(f"上传路径:")
+                logger.info(f"  源目录: {src_dir}")
+                logger.info(f"  目标目录: {dst_dir}")
+
+                # 过滤需要上传的文件
+                filenames_to_upload = []
+                for file_info in processed_files:
+                    filename = file_info["new_filename"]
+
+                    # 检查文件是否已存在
+                    if config.get("skip_existing_files", True):
+                        if uploader.check_file_exists(dst_dir, filename):
+                            logger.info(f"文件已存在，跳过: {filename}")
+                            continue
+
+                    filenames_to_upload.append(filename)
+
+                if not filenames_to_upload:
+                    logger.info("所有文件都已存在，无需上传")
+                    sys.exit(0)
+
+                # 确保目标目录存在
+                if not uploader.ensure_directory(dst_dir):
+                    logger.error("无法创建远程目标目录")
+                    sys.exit(1)
+
+                # 分批上传
+                batch_size = 5
+                success_count = 0
+
+                for i in range(0, len(filenames_to_upload), batch_size):
+                    batch = filenames_to_upload[i:i+batch_size]
+                    logger.info(f"上传批次 {i//batch_size + 1}: {len(batch)} 个文件")
+
+                    if not config.get("dry_run", False):
+                        if uploader.copy_files(src_dir, dst_dir, batch):
+                            success_count += len(batch)
+                    else:
+                        logger.info(f"[干跑] 将上传: {batch}")
+                        success_count += len(batch)
+
+                logger.info(f"上传完成: 成功 {success_count}/{len(processed_files)} 个文件")
+            else:
+                logger.info("未启用copy API或没有需要上传的文件，跳过上传")
+
+            # 统计处理结果
+            renamed_count = sum(1 for f in processed_files if f["renamed"])
+            moved_only_count = len(processed_files) - renamed_count
+
+            logger.info(f"处理完成: 共处理 {len(processed_files)} 个文件")
+            logger.info(f"  重命名文件: {renamed_count} 个")
+            logger.info(f"  仅移动文件: {moved_only_count} 个")
+
+        finally:
+            # 释放锁
+            locker.release_lock(lock_file)
+            locker.cleanup_old_locks()
+
+    except Exception as e:
+        logger.error(f"程序运行出错: {e}", exc_info=True)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    # 如果传入参数 "--test"，则运行测试
+    if len(sys.argv) > 1 and sys.argv[1] == "--test":
+        test_universal_extractor()
+    else:
+        main()

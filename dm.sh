@@ -1,5 +1,8 @@
 #!/bin/sh
 
+#export https_proxy=http://127.0.0.1:1080
+
+#export http_proxy=http://127.0.0.1:1080
 ## nyaa
 # RSS="https://nyaa.si/?page=rss&q=$1&c=0_0&f=0"
 # #RSS="https://nyaa.si/?page=rss&q=%E5%92%AA%E6%A2%A6%E5%8A%A8%E6%BC%AB%E7%BB%84+%E4%B8%80%E6%8B%B3%E8%B6%85%E4%BA%BA&c=0_0&f=0"
@@ -10,10 +13,11 @@
 
 ## 甜蜜计划
 MAG=`/usr/local/bin/mikanani -k $1 -d $2`
-# MAG=`curl "https://mikanani.me/RSS/Search?searchstr=$1" | cut -d\" -f 16`
+#MAG=`export http_proxy=http://127.0.0.1:1080 https_proxy=http://127.0.0.1:1080 ; /usr/local/bin/mikanani -k $1 -d $2`
+#MAG=`curl "https://mikanani.me/RSS/Search?searchstr=$1" | cut -d\" -f 16`
 echo $MAG
 
 DIR=${2:-$1}
-mkdir /home/tiny/dm/"$DIR"
+# mkdir /home/tiny/dm/"$DIR"
 
 transmission-remote -n tiny:200612031 -w /home/tiny/dm/"$DIR" -a "$MAG"
