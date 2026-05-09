@@ -1,9 +1,232 @@
-<<<<<<< HEAD
-<<<<<<< HEAD
-# Nothing important
-=======
-# Have Fun
->>>>>>> new_branch_name
-=======
-# Nothing important
->>>>>>> 5c38e07ce822ea08d5edceea74e3ef8d897be2eb
+# ~/bin — Personal Shell Scripts
+
+个人脚本集合，包含视频下载、RSS 生成、文件上传同步、网络配置等工具。
+
+## 依赖
+
+| 工具 | 用途 |
+|------|------|
+| `aria2c` | 下载管理器 |
+| `transmission-remote` | BT 客户端（认证：`tiny:200612031`） |
+| `rclone` | 云存储同步（alist remote） |
+| `ffmpeg` / `ffprobe` | 视频处理 |
+| `sendmail` | 邮件通知 |
+| `inotifywait` | 文件监控 |
+| `mplayer` / `feh` | 媒体播放 / 图片浏览 |
+| `scrot` | 截图 |
+| `yt-dlp` / `you-get` / `youtube-dl` | 在线视频下载 |
+
+> **注意**：`common.py`、`1090ys.py`、`podcast.py`、`flv_join.py`、`mp4_join.py` 是 **Python 2** 脚本，不要随意升级。只有 `upload_alist.py` 和 `podcast.py` 使用 Python 3。
+
+---
+
+## 视频下载
+
+### 1090 影视
+
+| 脚本 | 说明 |
+|------|------|
+| `1090.sh` | 搜索 1090ys.com，交互选择后下载。用法：`1090.sh 关键词 [tv\|mov\|btv\|bmov\|dm] [季数]` |
+| `1090ys.sh` | 按集数范围批量下载。用法：`1090ys.sh 剧集ID 起始集 结束集 [季数] 文件名前缀` |
+| `1090ys.py` | Python 2 辅助脚本，解析 1090ys 播放页提取视频直链 |
+| `1090rss.sh` | 根据剧集 ID 和起始集数，下载从该集到最新一集。用法：`1090rss.sh 剧集ID 起始集 [tv\|mov\|btv\|bmov\|dm] 剧名 [季数]` |
+
+### 海盗湾（The Pirate Bay）
+
+| 脚本 | 说明 |
+|------|------|
+| `bay.sh` | 搜索海盗湾，交互选择结果添加到 Transmission。需代理 `http://127.0.0.1:1080`。用法：`bay.sh 关键词 [tv\|mov\|btv\|bmov] 目录名` |
+| `baymov.sh` | 快速搜索海盗湾 1080p 电影并添加到 Transmission。用法：`baymov.sh 关键词` |
+| `baytv.sh` | 快速搜索海盗湾 1080p 剧集并添加到 Transmission。用法：`baytv.sh 关键词` |
+
+### RARBG 镜像
+
+| 脚本 | 说明 |
+|------|------|
+| `rar.sh` | 搜索 RARBG 镜像（alyk3.dynu.net），交互选择添加 Transmission。用法：`rar.sh 关键词 目录` |
+| `rarbg.sh` | 通过 `spider` 工具搜索，优先使用 115 网盘（six-cli）离线下载，fallback 到 Transmission |
+| `rartv.sh` | 搜索 RARBG 镜像 1080p 剧集并下载。用法：`rartv.sh 剧集名 目录` |
+
+### domp4 监控
+
+| 脚本 | 说明 |
+|------|------|
+| `domp4.sh` | 通用 domp4.cc 更新监控。用法：`domp4.sh 页面ID 目标目录` |
+| `dom4gwpm.sh` | 硬编码监控「国王排名」（已写死 URL 和目录） |
+| `domp4ay.sh` | 硬编码监控「江照黎明」 |
+| `domp4zrj.sh` | 硬编码监控「爱拼会赢」 |
+
+### 其他下载源
+
+| 脚本 | 说明 |
+|------|------|
+| `dm.sh` | 通过 `mikanani`（蜜柑计划）搜索动漫并添加到 Transmission。用法：`dm.sh 关键词 目录名` |
+| `nyaa.sh` | 搜索 sukebei.nyaa.si，交互选择添加 Transmission |
+| `magnet.sh` | 搜索 cili03.com 磁力链接，分页浏览。用法：`magnet.sh 关键词` |
+| `mp4ba.sh` | 检查 mp4ba.com 页面是否有新集数更新并下载 |
+| `fixtv.sh` | 从 zimuxia.cn 下载字幕组资源。用法：`fixtv.sh 页面slug [tv\|mov\|btv\|bmov]` |
+| `风犬.sh` | 硬编码监控「棋魂.2020」（bt-tt.com），有新集自动添加 Transmission |
+
+### flvcd 在线视频解析
+
+| 脚本 | 说明 |
+|------|------|
+| `flvcd.sh` | 通过 flvcd.com 解析视频并播放/下载。支持 `-h`（高清）、`-n`（普清）、`-d`（aria2 下载）、`-w`（wget 下载）、`-F`（全屏播放）、`-p`（代理）、`-f 文件名` |
+| `flvcd_proxy.sh` | flvcd 代理版（走 `http://127.0.0.1:8087` 代理），支持 `-s/-h/-n` 画质、`-d` 下载、`-v` vlc 播放 |
+| `mplayer.sh` | 通过 flvcd.com 解析后播放，支持 `-s/-h/-n` 画质、`-d` aria2 下载、`-v` vlc 播放 |
+
+### you-get / youtube-dl 在线播放
+
+| 脚本 | 说明 |
+|------|------|
+| `youget.sh` | 用 you-get 解析 URL 并通过 mplayer 播放。加 `-p` 参数走代理 |
+| `youtube.sh` | 用 youtube-dl 解析 URL 并通过 wget + mplayer 播放。加 `-p` 参数走代理 |
+| `youku` | 同 youget.sh，专用于优酷 |
+| `yg.sh` | you-get 下载守护，卡住时自动重启 |
+
+### yt-dlp RSS
+
+| 脚本 | 说明 |
+|------|------|
+| `yt-dlp-rss.sh` | 从 YouTube / Bilibili 下载视频或音频（播客）。支持 `-x` 仅音频、`-l 列表文件` 批量、`-n 名称 URL` 单个。音频下载后自动生成播客 RSS（调用 `podcast.py`） |
+
+### 更新监控通知
+
+| 脚本 | 说明 |
+|------|------|
+| `onepunchman.sh` | 监控「一拳超人」漫画更新（manhua.fzdm.com），通过 ServerChan 推送通知 |
+| `21wecan.sh` | 监控 21wecan.com 更新，通过 ServerChan 推送通知 |
+
+---
+
+## RSS 生成
+
+| 脚本 | 说明 |
+|------|------|
+| `dmrss.sh` | 蜜柑计划动漫 RSS 脚本（745 行），功能最完整：支持 `-s` 搜索番组、`-i` 指定 bangumi ID、`-g` 指定字幕组、`-a` 下载全部、交互选择字幕组和集数 |
+| `mikrss.sh` | 从自定义 RSS URL 批量添加磁力链接到 Transmission。用法：`mikrss.sh RSS_URL 目录名` |
+| `ystrss.sh` | YTS RSS 监控，检查新种子并下载 .torrent 文件 |
+
+---
+
+## 上传 / 同步
+
+| 脚本 | 说明 |
+|------|------|
+| `upload_alist.py` | **最复杂脚本**（894 行）。Transmission 下载完成后自动重命名视频文件（按 SxxExx 格式）并上传到 Alist。配置文件：`~/.config/transmission_alist_upload.json`。支持 `--dry-run` 测试、`--debug` 调试、`--generate-config` 生成配置、`--torrent-dir` 手动指定目录 |
+| `sub.sh` | upload_alist 的 Shell 版（623 行），同样实现 Transmission→Alist 自动上传，使用配置文件 `~/.config/transmission_alist_upload.conf` |
+| `watchupload.sh` | inotifywait 监控 `/var/www/file/upload`，新 .docx 自动转 HTML（pandoc），新 .jpg 自动追加到 pic.html |
+| `backuppic.sh` | inotifywait 监控 `/home/tiny/backup/photos/DCIM/Camera/`，有新照片时自动 rsync 到 USB 设备 |
+| `bak.sh` | 挂载 USB（UDID: 405B-9E92）→ rsync 照片备份 → 卸载 |
+
+---
+
+## Alist / rclone STRM 生成
+
+| 脚本 | 说明 |
+|------|------|
+| `ali_strm.sh` | 为阿里云盘内容生成 .strm 文件（用于 Alist 播放）。用法：`ali_strm.sh 分类 前缀` |
+| `baidu_strm.sh` | 为百度网盘内容生成 .strm 文件。用法：`baidu_strm.sh 分类 前缀` |
+
+生成的 strm 文件位于 `/home/tiny/alist_tv/`，指向 `https://alyk3.dynu.net/d/` 路径。
+
+---
+
+## 网络 / DNS
+
+| 脚本 | 说明 |
+|------|------|
+| `dyn.sh` | 更新 dynv6.net IPv6 动态 DNS（token 硬编码，网卡 enp2s0） |
+| `dynv6.sh` | 更新 Dynu IPv6 动态 DNS（认证信息硬编码），需代理 |
+| `eth.sh` | 根据以太网口状态更新 Awesome WM 配置（`~/.config/awesome/personal.lua`） |
+| `vpn.sh` | 启动 PPTP VPN 连接（VPS）并设置默认路由 |
+| `trackers.sh` | Transmission 下载钩子：自动添加 trackers（从 ngosang/trackerslist 获取） |
+| `update-geosite.sh` | 更新 v2ray 的 geoip.dat / geosite.dat 规则库并重启 v2ray |
+| `update_you-get.sh` | 从 AUR 更新 you-get（Arch Linux） |
+
+---
+
+## 照片 / HTML 生成
+
+| 脚本 | 说明 |
+|------|------|
+| `photos.sh` | 按年月组织照片到 `/home/tiny/backup/photos/Sync/camera/YYYY/MM/` |
+| `vedios.sh` | 同 photos.sh（按年月组织照片，文件名有误） |
+| `photo-html.sh` | 将当前目录所有 .jpg 生成为带 `<img>` 标签的 index.html |
+| `pic.sh` | 浏览煎蛋网图片（jandan.net/pic），交互翻页浏览或生成 HTML |
+| `ooxx.sh` | 浏览煎蛋网 OOXX 板块（jandan.net/ooxx），交互翻页浏览或生成 HTML |
+| `ooxx` | ooxx.sh 的变体（aria2 下载方式略有不同） |
+| `meizi.sh` | 浏览煎蛋网妹子图，下载后用 feh 浏览 |
+| `tumblr.sh` | 批量抓取 Tumblr 博客页面图片并生成 HTML |
+| `weixinrame.sh` | 重命名微信导出的图片（mm*.jpg → weixin-YYYYMd-HMS.jpg） |
+
+---
+
+## 视频播放 / HTML 生成
+
+| 脚本 | 说明 |
+|------|------|
+| `vedioTohtml` | 为目录中的视频文件生成带播放器的 HTML（原生 `<video>` 标签），支持倍速切换和集数选择 |
+| `dplayerTohtml` | 为目录中的视频文件生成 DPlayer 播放页面，按 SxxExx 格式提取集数作为按钮 |
+| `static.sh` | 生成 DPlayer 播放页面（仅列出当前目录的 .mkv 文件） |
+| `com.sh` | 使用 ffmpeg concat 合并多个视频片段为 .mkv |
+| `ff.sh` | ffmpeg 转码封装器。用法：`ff.sh 源文件 码率 分辨率 比例 输出文件名` |
+| `rn.sh` | 批量重命名视频文件，添加 SxxExx 格式。用法：`rn.sh 目录 [季数]` |
+| `m3u.sh` | 为有声书目录生成 .m3u 播放列表。用法：`m3u.sh 书名` |
+
+---
+
+## 系统 / 其他
+
+| 脚本 | 说明 |
+|------|------|
+| `cpu.sh` | 运行 top 按 CPU 排序，输出到 1.txt，10 秒后终止 |
+| `temp.sh` | 实时监控 CPU 温度（k8temp 驱动），彩色进度条显示 |
+| `hplog.sh` | SSH 到路由器（192.168.1.254）拉取 syslog，追加新日志到 old |
+| `xcompmgr.sh` | 管理 xcompmgr 合成管理器。用法：`xcompmgr.sh`（启动）、`-s`（停止）、`-q`（查询） |
+| `xmodmap.sh` | 交换 Caps Lock 和 Escape 键 |
+| `note.sh` | 从 ~/Downloads/note.db 读取 aria2c 任务并批量下载 |
+| `yc.sh` | SCP 文件到 yc-pc。用法：`yc.sh 文件/目录` |
+| `goindex.sh` | 从 Google Drive Index 批量下载文件（通过 Cloudflare Worker 代理） |
+| `magnet.sh` | 搜索磁力链接 |
+| `online.sh` | 定义 `online` 函数，通过 wget + mplayer 在线播放视频 |
+| `goindex1.sh` | goindex.sh 的变体 |
+| `jt` | 截图（scrot），保存到 ~/Sync。用法：`jt [文件名]` |
+| `mplayer.sh` | 视频播放脚本 |
+
+---
+
+## 二进制工具
+
+| 文件 | 说明 |
+|------|------|
+| `speedtest` | Ookla Speedtest CLI |
+| `besttrace` | IPIP BestTrace 路由追踪 |
+| `filebrowser` | FileBrowser 文件管理器 |
+
+---
+
+## Python 辅助脚本
+
+| 脚本 | Python 版本 | 说明 |
+|------|-------------|------|
+| `common.py` | **Python 2** | HTTP 请求、下载、进度条等通用工具函数 |
+| `1090ys.py` | **Python 2** | 解析 1090ys.com 播放页提取视频直链 |
+| `flv_join.py` | **Python 2** | 合并 FLV 文件（解析 FLV 二进制格式） |
+| `mp4_join.py` | **Python 2** | 合并 MP4 文件（解析 ISO 14496-12 容器格式） |
+| `podcast.py` | Python 3 | 为目录中的音频文件生成播客 RSS feed |
+| `upload_alist.py` | Python 3 | Transmission → Alist 自动上传（见上方详细说明） |
+
+---
+
+## 目录约定
+
+| 路径 | 用途 |
+|------|------|
+| `/home/tiny/hd/` | 主媒体下载（movie/、tv/） |
+| `/home/tiny/backup/` | 备份（photo/、tv/、movies/） |
+| `/home/tiny/dm/` | 动漫下载 |
+| `/home/tiny/alist_tv/` | Alist/rclone strm 文件 |
+| `/home/tiny/upload_alist/` | upload_alist.py 暂存目录 |
+| `/home/tiny/139/` | 139 网盘内容（podcast/、video/） |
+| `/home/tiny/wd/` | 其他下载内容 |

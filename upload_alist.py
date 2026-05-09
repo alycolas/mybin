@@ -2,12 +2,13 @@
 """
 Transmission下载完成后自动上传视频文件到Alist
 优化版本：支持 copy 或 copy+delete（模拟 move）两种模式
-        支持配置多个“仅重命名不上传”关键词
+        支持配置多个"仅重命名不上传"关键词
         支持生成默认配置文件
         支持Debug模式（默认干跑）
         支持手动指定测试目录
         支持自定义Transmission环境变量名
 修正：文件夹季信息优先于文件名季
+优化：季数和集数提取逻辑重构
 """
 
 import os
@@ -24,9 +25,278 @@ from typing import List, Dict, Tuple, Optional
 import requests
 import subprocess
 from datetime import datetime
+from dataclasses import dataclass
 
 # 全局日志记录器
 logger = logging.getLogger(__name__)
+
+# 预编译的正则表达式模式
+class PatternManager:
+    """正则表达式管理器 - 统一管理所有正则表达式"""
+
+    # 季数提取模式
+    SEASON_PATTERNS = [
+        re.compile(r'[Ss](?:eason)?[\s_]*(\d{1,2})'),
+        re.compile(r'第\s*([一二三四五六七八九十\d]+)\s*季'),
+        re.compile(r'Part\s*(\d{1,2})'),
+        re.compile(r'Vol\.\s*(\d{1,2})'),
+        re.compile(r'(\d+)[季部]'),
+    ]
+
+    # 集数提取模式（主要）
+    EPISODE_PATTERNS = [
+        re.compile(r'\[(\d{1,3}(?:\.5)?)(?:v\d+)?(?:[ _].*?)?\]'),
+        re.compile(r'【(\d{1,3}(?:\.5)?)】'),
+        re.compile(r' - (\d{1,3}(?:-\d{1,3})?)'),
+        re.compile(r'第\s*(\d+(?:\.5)?)\s*[集话]'),
+        re.compile(r'\](\d{1,3})\['),
+        re.compile(r'\s(\d{1,3})\s\['),
+        re.compile(r'(\d{1,3})\.(?!\d{3,4}[pP])'),
+    ]
+
+    # 特殊集数模式（针对特定格式）
+    SPECIAL_EPISODE_PATTERNS = [
+        re.compile(r'Episode\s+(\d{1,3})', re.I),
+        re.compile(r'E(\d{1,3})(?:\s|$)', re.I),
+    ]
+
+    # 集数提取模式（备用）
+    BACKUP_EPISODE_PATTERNS = [
+        re.compile(r'\s(\d{1,3})\s'),
+        re.compile(r'(\d{1,3})[\]\)]'),
+    ]
+
+    # 总集数提取模式
+    TOTAL_EPISODE_PATTERN = re.compile(r'\((\d{2,4})\)')
+
+    # 系列名称清理模式
+    SERIES_NAME_CLEAN_PATTERNS = [
+        re.compile(r'[第]?[一二三四五六七八九十\d]+季'),
+        re.compile(r'[Ss](eason)?[\s_]*\d{1,2}'),
+        re.compile(r'[Pp](art)?[\s_]*\d{1,2}'),
+        re.compile(r'[Cc]omplete'),
+        re.compile(r'全集'),
+        re.compile(r'\[.*?\]'),
+        re.compile(r'\(.*?\)'),
+        re.compile(r'【.*?】'),
+    ]
+
+    # 文件名清理模式（移除无关信息）
+    FILENAME_CLEAN_PATTERN = re.compile(
+        r'1920x1080|1280x720|1080p|720p|2160p|4k|202[0-9]|'
+        r'x264|hevc|10bit|aac|mp4|mkv|avc|webrip|web-dl|webdl|'
+        r'srt|ass|cht|chs|big5|gb|bahamut|viutv|cr|abema|'
+        r'remux|opus|pgs|简繁|双语|内封|内嵌|'
+        r'\[.*?\]|\(.*?\)|【.*?】',
+        re.I
+    )
+
+# 季数和集数信息数据类
+@dataclass
+class SeasonEpisodeInfo:
+    """季数和集数信息数据类"""
+    season: str = "S01"
+    episode: str = ""
+    total_episode: str = ""
+    raw_episode: str = ""
+    has_episode_info: bool = False
+
+
+class SeasonEpisodeExtractor:
+    """季数和集数提取器 - 优化版本"""
+
+    def __init__(self, config: Dict):
+        self.config = config
+        self.default_season = config.get("default_season", "S01")
+        self.cn_map = self._build_cn_map()
+        self.pattern_manager = PatternManager()
+
+    def extract_from_filename(self, filename: str) -> SeasonEpisodeInfo:
+        """从文件名提取季数和集数信息"""
+        # 清理文件名
+        clean_name = self._clean_filename(filename)
+
+        # 提取季数
+        season = self._extract_season(clean_name)
+
+        # 提取总集数
+        total_episode = self._extract_total_episode(filename)
+
+        # 提取集数
+        episode_info = self._extract_episode(clean_name, filename)
+
+        return SeasonEpisodeInfo(
+            season=season,
+            episode=episode_info['episode'],
+            total_episode=total_episode,
+            raw_episode=episode_info['raw_episode'],
+            has_episode_info=episode_info['has_episode_info']
+        )
+
+    def extract_season_from_folder(self, folder_name: str) -> Tuple[str, bool]:
+        """从文件夹名提取季数"""
+        # 清理文件夹名
+        clean_folder = self._clean_folder_name(folder_name)
+
+        # 提取季数
+        season = self._extract_season(clean_folder)
+
+        # 检查是否找到季数信息
+        found = season != self.default_season
+        return season, found
+
+    def format_episode_string(self, season: str, episode: str) -> str:
+        """格式化集数字符串"""
+        if not episode:
+            return ""
+
+        if '-' in episode:
+            parts = episode.split('-')
+            if len(parts) == 2:
+                try:
+                    start_ep = int(parts[0])
+                    end_ep = int(parts[1])
+                    return f"E{start_ep:02d}-E{end_ep:02d}"
+                except ValueError:
+                    return episode
+        elif episode.startswith('E'):
+            return episode
+        else:
+            try:
+                ep_num = int(episode)
+                return f"E{ep_num:02d}"
+            except ValueError:
+                return episode
+
+    def _clean_filename(self, filename: str) -> str:
+        """清理文件名，移除无关信息"""
+        return self.pattern_manager.FILENAME_CLEAN_PATTERN.sub('', filename)
+
+    def _clean_folder_name(self, folder_name: str) -> str:
+        """清理文件夹名"""
+        upload_keyword = self.config.get("upload_keyword", "upload_alist")
+        return folder_name.replace(upload_keyword, "")
+
+    def _extract_season(self, text: str) -> str:
+        """从文本提取季数"""
+        for pattern in self.pattern_manager.SEASON_PATTERNS:
+            match = pattern.search(text)
+            if match:
+                s_val = match.group(1)
+                season_num = self.cn_map.get(s_val, s_val)
+                try:
+                    return f"S{int(season_num):02d}"
+                except ValueError:
+                    continue
+        return self.default_season
+
+    def _extract_total_episode(self, filename: str) -> str:
+        """提取总集数"""
+        match = self.pattern_manager.TOTAL_EPISODE_PATTERN.search(filename)
+        return match.group(1) if match else ""
+
+    def _extract_episode(self, clean_name: str, original_filename: str) -> Dict:
+        """提取集数信息"""
+        result = {
+            "episode": "",
+            "raw_episode": "",
+            "has_episode_info": False
+        }
+
+        # 尝试特殊集数模式（针对特定格式如 "Episode 13"）
+        for pattern in self.pattern_manager.SPECIAL_EPISODE_PATTERNS:
+            match = pattern.search(original_filename)
+            if match:
+                ep_value = match.group(1)
+                result["raw_episode"] = ep_value
+
+                # 验证集数范围
+                min_ep = self.config.get("min_episode_number", 1)
+                max_ep = self.config.get("max_episode_number", 999)
+
+                formatted_episode = self._format_episode(ep_value, min_ep, max_ep)
+                if formatted_episode:
+                    result["episode"] = formatted_episode
+                    result["has_episode_info"] = True
+                    return result
+
+        # 尝试主要集数模式
+        for pattern in self.pattern_manager.EPISODE_PATTERNS:
+            match = pattern.search(original_filename)
+            if match:
+                ep_value = match.group(1)
+                result["raw_episode"] = ep_value
+
+                # 验证集数范围
+                min_ep = self.config.get("min_episode_number", 1)
+                max_ep = self.config.get("max_episode_number", 999)
+
+                formatted_episode = self._format_episode(ep_value, min_ep, max_ep)
+                if formatted_episode:
+                    result["episode"] = formatted_episode
+                    result["has_episode_info"] = True
+                break
+
+        # 如果主要模式未找到，尝试备用模式
+        if not result["has_episode_info"]:
+            for pattern in self.pattern_manager.BACKUP_EPISODE_PATTERNS:
+                match = pattern.search(clean_name)
+                if match:
+                    ep_value = match.group(1)
+                    result["raw_episode"] = ep_value
+
+                    min_ep = self.config.get("min_episode_number", 1)
+                    max_ep = self.config.get("max_episode_number", 999)
+
+                    formatted_episode = self._format_episode(ep_value, min_ep, max_ep)
+                    if formatted_episode:
+                        result["episode"] = formatted_episode
+                        result["has_episode_info"] = True
+                    break
+
+        # 处理原始季数字符串中的范围情况
+        if not result["has_episode_info"] and '-' in result["raw_episode"]:
+            try:
+                start_ep, end_ep = map(int, result["raw_episode"].split('-'))
+                min_ep = self.config.get("min_episode_number", 1)
+                max_ep = self.config.get("max_episode_number", 999)
+                if min_ep <= start_ep <= max_ep and min_ep <= end_ep <= max_ep:
+                    result["episode"] = f"E{start_ep:02d}-E{end_ep:02d}"
+                    result["has_episode_info"] = True
+            except ValueError:
+                pass
+
+        return result
+
+    def _format_episode(self, ep_value: str, min_ep: int, max_ep: int) -> Optional[str]:
+        """格式化集数字符串"""
+        if '-' in ep_value:
+            try:
+                start_ep, end_ep = map(int, ep_value.split('-'))
+                if min_ep <= start_ep <= max_ep and min_ep <= end_ep <= max_ep:
+                    return f"E{start_ep:02d}-E{end_ep:02d}"
+            except ValueError:
+                return None
+        else:
+            try:
+                ep_num = int(ep_value)
+                if min_ep <= ep_num <= max_ep:
+                    return f"E{ep_num:02d}"
+            except ValueError:
+                return None
+        return None
+
+    def _build_cn_map(self) -> Dict[str, str]:
+        """构建中文数字映射"""
+        cn_map = {
+            '一': '1', '二': '2', '三': '3', '四': '4', '五': '5',
+            '六': '6', '七': '7', '八': '8', '九': '9', '十': '10',
+        }
+        # 添加数字映射
+        for i in range(1, 11):
+            cn_map[str(i)] = str(i)
+        return cn_map
+
 
 # 邮件通知
 def send_simple_notification(torrent_name: str, torrent_dir: str, dry_run: bool = False):
@@ -168,223 +438,54 @@ class FileLocker:
             logger.warning(f"清理旧锁文件失败: {e}")
 
 class UniversalAnimeInfoExtractor:
-    """通用动漫信息提取器 - 修正：文件夹季优先"""
+    """通用动漫信息提取器 - 优化版本"""
 
     def __init__(self, config: Dict):
         self.config = config
         self.default_season = config.get("default_season", "S01")
-        self.cn_map = {
-            '一': '1', '二': '2', '三': '3', '四': '4', '五': '5',
-            '六': '6', '七': '7', '八': '8', '九': '9', '十': '10',
-            '1': '1', '2': '2', '3': '3', '4': '4', '5': '5',
-            '6': '6', '7': '7', '8': '8', '9': '9', '10': '10',
-        }
-
-    def extract_info_from_filename(self, filename: str) -> Dict[str, str]:
-        """从文件名中提取季数、集数和总集数"""
-        result = {
-            "season": self.default_season,
-            "episode": "",
-            "total_episode": "",
-            "raw_episode": "",
-            "has_episode_info": False,
-        }
-
-        clean_name = re.sub(
-            r'1920x1080|1280x720|1080p|720p|2160p|4k|202[0-9]|'
-            r'x264|hevc|10bit|aac|mp4|mkv|avc|webrip|web-dl|webdl|'
-            r'srt|ass|cht|chs|big5|gb|bahamut|viutv|cr|abema|'
-            r'remux|opus|pgs|简繁|双语|内封|内嵌|'
-            r'\[.*?\]|\(.*?\)|【.*?】',
-            '', filename, flags=re.I
-        )
-
-        # 季
-        season_patterns = [
-            r'[Ss](?:eason)?[\s_]*(\d{1,2})',
-            r'第\s*([一二三四五六七八九十\d]+)\s*季',
-            r'Part\s*(\d{1,2})',
-            r'Vol\.\s*(\d{1,2})',
-            r'(\d+)[季部]',
-        ]
-        for pattern in season_patterns:
-            match = re.search(pattern, clean_name, re.I)
-            if match:
-                s_val = match.group(1)
-                season_num = self.cn_map.get(s_val, s_val)
-                try:
-                    result["season"] = f"S{int(season_num):02d}"
-                    break
-                except ValueError:
-                    continue
-
-        # 总集数
-        total_match = re.search(r'\((\d{2,4})\)', filename)
-        if total_match:
-            result["total_episode"] = total_match.group(1)
-
-        # 集数
-        ep_patterns = [
-            r'\[(\d{1,3}(?:\.5)?)(?:v\d+)?(?:[ _].*?)?\]',
-            r'【(\d{1,3}(?:\.5)?)】',
-            r' - (\d{1,3}(?:-\d{1,3})?)',
-            r'第\s*(\d+(?:\.5)?)\s*[集话]',
-            r'\](\d{1,3})\[',
-            r'\s(\d{1,3})\s\[',
-            r'(\d{1,3})\.(?!\d{3,4}[pP])',
-        ]
-        for p in ep_patterns:
-            m = re.search(p, filename, re.I)
-            if m:
-                ep_value = m.group(1)
-                result["raw_episode"] = ep_value
-                min_ep = self.config.get("min_episode_number", 1)
-                max_ep = self.config.get("max_episode_number", 999)
-                if '-' in ep_value:
-                    try:
-                        start_ep, end_ep = map(int, ep_value.split('-'))
-                        if min_ep <= start_ep <= max_ep and min_ep <= end_ep <= max_ep:
-                            result["episode"] = ep_value
-                            result["has_episode_info"] = True
-                    except ValueError:
-                        pass
-                else:
-                    try:
-                        ep_num = int(ep_value)
-                        if min_ep <= ep_num <= max_ep:
-                            result["episode"] = f"E{ep_num:02d}"
-                            result["has_episode_info"] = True
-                    except ValueError:
-                        pass
-                break
-
-        if not result["has_episode_info"]:
-            additional_patterns = [
-                r'\s(\d{1,3})\s',
-                r'(\d{1,3})[\]\)]',
-            ]
-            for p in additional_patterns:
-                m = re.search(p, clean_name)
-                if m:
-                    ep_value = m.group(1)
-                    result["raw_episode"] = ep_value
-                    min_ep = self.config.get("min_episode_number", 1)
-                    max_ep = self.config.get("max_episode_number", 999)
-                    try:
-                        ep_num = int(ep_value)
-                        if min_ep <= ep_num <= max_ep:
-                            result["episode"] = f"E{ep_num:02d}"
-                            result["has_episode_info"] = True
-                            break
-                    except ValueError:
-                        continue
-
-        if not result["has_episode_info"] and '-' in result["raw_episode"]:
-            try:
-                start_ep, end_ep = map(int, result["raw_episode"].split('-'))
-                min_ep = self.config.get("min_episode_number", 1)
-                max_ep = self.config.get("max_episode_number", 999)
-                if min_ep <= start_ep <= max_ep and min_ep <= end_ep <= max_ep:
-                    result["episode"] = result["raw_episode"]
-                    result["has_episode_info"] = True
-            except ValueError:
-                pass
-
-        return result
-
-    def extract_season_from_folder(self, folder_name: str) -> Tuple[str, bool]:
-        """从文件夹名提取季数，返回 (季字符串, 是否找到)"""
-        upload_keyword = self.config.get("upload_keyword", "upload_alist")
-        clean_folder = folder_name.replace(upload_keyword, "")
-
-        season_patterns = [
-            r'[Ss](?:eason)?[\s_]*(\d{1,2})',
-            r'第\s*([一二三四五六七八九十\d]+)\s*季',
-            r'Part\s*(\d{1,2})',
-            r'(\d+)[季部]',
-        ]
-
-        for pattern in season_patterns:
-            match = re.search(pattern, clean_folder, re.I)
-            if match:
-                s_val = match.group(1)
-                season_num = self.cn_map.get(s_val, s_val)
-                try:
-                    return (f"S{int(season_num):02d}", True)
-                except ValueError:
-                    continue
-
-        return (self.default_season, False)
-
-    def clean_series_name(self, folder_name: str) -> str:
-        upload_keyword = self.config.get("upload_keyword", "upload_alist")
-        cleaned = folder_name.replace(upload_keyword, "")
-        patterns = [
-            r'[第]?[一二三四五六七八九十\d]+季',
-            r'[Ss](eason)?[\s_]*\d{1,2}',
-            r'[Pp](art)?[\s_]*\d{1,2}',
-            r'[Cc]omplete',
-            r'全集',
-            r'\[.*?\]',
-            r'\(.*?\)',
-            r'【.*?】',
-        ]
-        for pattern in patterns:
-            cleaned = re.sub(pattern, '', cleaned, flags=re.IGNORECASE)
-        cleaned = re.sub(r'[._\-]+', ' ', cleaned)
-        cleaned = cleaned.strip()
-        return cleaned if cleaned else folder_name
-
-    def format_episode_string(self, season: str, episode: str) -> str:
-        if not episode:
-            return ""
-        if '-' in episode:
-            parts = episode.split('-')
-            if len(parts) == 2:
-                try:
-                    start_ep = int(parts[0])
-                    end_ep = int(parts[1])
-                    return f"E{start_ep:02d}-E{end_ep:02d}"
-                except ValueError:
-                    return episode
-        elif episode.startswith('E'):
-            return episode
-        else:
-            try:
-                ep_num = int(episode)
-                return f"E{ep_num:02d}"
-            except ValueError:
-                return episode
+        self.extractor = SeasonEpisodeExtractor(config)
+        self.pattern_manager = PatternManager()
 
     def extract_series_info(self, folder_name: str, filename: str) -> Dict[str, str]:
         """提取完整的剧集信息，文件夹季优先"""
-        folder_season, folder_found = self.extract_season_from_folder(folder_name)
-        file_info = self.extract_info_from_filename(filename)
+        # 从文件夹提取季数
+        folder_season, folder_found = self.extractor.extract_season_from_folder(folder_name)
 
-        # 决定最终季
+        # 从文件名提取信息
+        file_info = self.extractor.extract_from_filename(filename)
+
+        # 决定最终季数（文件夹季优先）
         if folder_found:
             season = folder_season
         else:
-            if file_info["season"] != self.default_season:
-                season = file_info["season"]
-            else:
-                season = self.default_season
+            season = file_info.season if file_info.season != self.default_season else self.default_season
 
-        formatted_episode = ""
-        if file_info["has_episode_info"]:
-            formatted_episode = self.format_episode_string(season, file_info["episode"])
+        # 格式化集数
+        formatted_episode = self.extractor.format_episode_string(season, file_info.episode)
 
-        series_name = self.clean_series_name(folder_name)
+        # 清理系列名称
+        series_name = self._clean_series_name(folder_name)
 
         return {
             "series_name": series_name,
             "season": season,
             "episode": formatted_episode,
-            "raw_episode": file_info["raw_episode"],
-            "total_episode": file_info["total_episode"],
+            "raw_episode": file_info.raw_episode,
+            "total_episode": file_info.total_episode,
             "original_filename": filename,
-            "has_episode_info": file_info["has_episode_info"],
+            "has_episode_info": file_info.has_episode_info,
         }
+
+    def _clean_series_name(self, folder_name: str) -> str:
+        """清理系列名称"""
+        upload_keyword = self.config.get("upload_keyword", "upload_alist")
+        cleaned = folder_name.replace(upload_keyword, "")
+
+        for pattern in self.pattern_manager.SERIES_NAME_CLEAN_PATTERNS:
+            cleaned = pattern.sub('', cleaned)
+
+        cleaned = re.sub(r'[._\-]+', ' ', cleaned)
+        return cleaned.strip() if cleaned else folder_name
 
 class FileScanner:
     """文件扫描器"""
